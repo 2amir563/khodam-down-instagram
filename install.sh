@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Instagram Telegram Bot Installer
-# Single-file installation script for bot.py, requirements.txt, and service setup
+# Single-file installation script
 # GitHub: https://github.com/2amir563/khodam-down-instagram
 
 set -e
@@ -10,19 +10,25 @@ echo "=========================================="
 echo "Instagram Telegram Bot Installer"
 echo "=========================================="
 
+# Get current user
+CURRENT_USER=$(whoami)
+echo "Current user: $CURRENT_USER"
+echo ""
+
 # Update system packages
 echo "[1/10] Updating system packages..."
-sudo apt-get update -y
-sudo apt-get upgrade -y
+apt-get update -y
+apt-get upgrade -y
 
 # Install Python and pip if not installed
 echo "[2/10] Installing Python and required system packages..."
-sudo apt-get install -y python3 python3-pip python3-venv git curl wget
+apt-get install -y python3 python3-pip python3-venv git curl wget
 
-# Create project directory
+# Create project directory in current user's home
 echo "[3/10] Creating project directory..."
-mkdir -p ~/instagram-bot
-cd ~/instagram-bot
+PROJECT_DIR="/root/instagram-bot"
+mkdir -p $PROJECT_DIR
+cd $PROJECT_DIR
 
 # Create virtual environment
 echo "[4/10] Creating Python virtual environment..."
@@ -40,6 +46,7 @@ cat > bot.py << 'EOF'
 # -*- coding: utf-8 -*-
 
 import os
+import sys
 import logging
 import asyncio
 import aiohttp
@@ -47,35 +54,52 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import instaloader
 import json
-from urllib.parse import urlparse
 import re
 import tempfile
+
+# Add current directory to path for imports
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('/tmp/instagram_bot.log')
+    ]
 )
 logger = logging.getLogger(__name__)
 
 # Instagram downloader class
 class InstagramDownloader:
     def __init__(self):
-        self.loader = instaloader.Instaloader(
-            download_pictures=False,
-            download_videos=False,
-            download_video_thumbnails=False,
-            save_metadata=False,
-            compress_json=False
-        )
+        try:
+            self.loader = instaloader.Instaloader(
+                download_pictures=False,
+                download_videos=False,
+                download_video_thumbnails=False,
+                save_metadata=False,
+                compress_json=False,
+                quiet=True
+            )
+            logger.info("Instaloader initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Instaloader: {e}")
+            raise
         
     async def extract_content(self, url):
         """Extract content from Instagram link"""
         try:
+            logger.info(f"Extracting content from URL: {url}")
+            
             # Extract shortcode from URL
             shortcode = self._extract_shortcode(url)
             if not shortcode:
+                logger.error(f"Could not extract shortcode from URL: {url}")
                 return None, "Invalid Instagram URL"
+            
+            logger.info(f"Extracted shortcode: {shortcode}")
             
             # Get post
             post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
@@ -88,7 +112,7 @@ class InstagramDownloader:
                 'owner': post.owner_username,
                 'likes': post.likes,
                 'comments': post.comments,
-                'timestamp': post.date_utc.isoformat(),
+                'timestamp': post.date_utc.isoformat() if hasattr(post, 'date_utc') else '',
                 'media_count': post.mediacount,
                 'is_video': post.is_video,
                 'video_url': post.video_url if post.is_video else None,
@@ -103,18 +127,23 @@ class InstagramDownloader:
                     else:
                         content_info['image_urls'].append(node.display_url)
             
+            logger.info(f"Successfully extracted content for shortcode: {shortcode}")
             return content_info, None
             
+        except instaloader.exceptions.InstaloaderException as e:
+            logger.error(f"Instaloader error: {e}")
+            return None, f"Instagram error: {str(e)}"
         except Exception as e:
-            logger.error(f"Error extracting content: {e}")
-            return None, str(e)
+            logger.error(f"Error extracting content: {e}", exc_info=True)
+            return None, f"Error: {str(e)}"
     
     def _extract_shortcode(self, url):
         """Extract shortcode from Instagram URL"""
         patterns = [
             r'instagram\.com/p/([^/?#]+)',
             r'instagram\.com/reel/([^/?#]+)',
-            r'instagram\.com/tv/([^/?#]+)'
+            r'instagram\.com/tv/([^/?#]+)',
+            r'instagr\.am/p/([^/?#]+)'
         ]
         
         for pattern in patterns:
@@ -123,8 +152,41 @@ class InstagramDownloader:
                 return match.group(1)
         return None
 
+# Get bot token from environment or file
+def get_bot_token():
+    """Get bot token from environment variable or .env file"""
+    # Try environment variable first
+    token = os.getenv('TELEGRAM_BOT_TOKEN')
+    
+    if token and token != 'YOUR_BOT_TOKEN_HERE':
+        return token
+    
+    # Try .env file
+    env_file = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(env_file):
+        try:
+            with open(env_file, 'r') as f:
+                for line in f:
+                    if line.startswith('TELEGRAM_BOT_TOKEN='):
+                        token = line.split('=', 1)[1].strip()
+                        if token and token != 'YOUR_BOT_TOKEN_HERE':
+                            return token
+        except Exception as e:
+            logger.error(f"Error reading .env file: {e}")
+    
+    return None
+
 # Settings
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
+TOKEN = get_bot_token()
+if not TOKEN:
+    logger.error("Bot token not found! Please set TELEGRAM_BOT_TOKEN environment variable or create .env file")
+    print("ERROR: Bot token not found!")
+    print("Please set your bot token in one of these ways:")
+    print("1. Create .env file with: TELEGRAM_BOT_TOKEN=your_token_here")
+    print("2. Export environment variable: export TELEGRAM_BOT_TOKEN=your_token_here")
+    print("3. Edit bot.py and set TOKEN variable directly")
+    sys.exit(1)
+
 MAX_MESSAGE_LENGTH = 4096  # Telegram message length limit
 
 # Create downloader object
@@ -188,7 +250,10 @@ async def handle_instagram_link(update: Update, context: ContextTypes.DEFAULT_TY
     
     try:
         # Extract content
-        content_info, error = await downloader.extract_content(user_message)
+        content_info, error = await asyncio.wait_for(
+            downloader.extract_content(user_message),
+            timeout=30
+        )
         
         if error:
             await processing_msg.edit_text(f"❌ Error: {error}")
@@ -202,8 +267,11 @@ async def handle_instagram_link(update: Update, context: ContextTypes.DEFAULT_TY
         
         await processing_msg.delete()
         
+    except asyncio.TimeoutError:
+        await processing_msg.edit_text("❌ Request timeout. Please try again.")
+        logger.error(f"Timeout processing URL: {user_message}")
     except Exception as e:
-        logger.error(f"Error in handle_instagram_link: {e}")
+        logger.error(f"Error in handle_instagram_link: {e}", exc_info=True)
         await processing_msg.edit_text(f"❌ An error occurred: {str(e)}")
 
 def format_response(content_info):
@@ -278,7 +346,7 @@ async def send_json_file(update, content_info):
 # Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle bot errors"""
-    logger.error(f"Update {update} caused error {context.error}")
+    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
     
     try:
         await update.message.reply_text("❌ An error occurred. Please try again later.")
@@ -288,23 +356,47 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Main function
 def main():
     """Main function to start the bot"""
-    # Create application
-    application = Application.builder().token(TOKEN).build()
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_instagram_link))
-    
-    # Add error handler
-    application.add_error_handler(error_handler)
-    
-    # Start bot
-    print("🤖 Bot is starting...")
-    print(f"✅ Bot is running! Visit https://t.me/{(application.bot.username)} to interact with it.")
-    
-    # Start polling
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        logger.info("=" * 50)
+        logger.info("Starting Instagram Telegram Bot")
+        logger.info("=" * 50)
+        
+        # Create application
+        application = Application.builder().token(TOKEN).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_instagram_link))
+        
+        # Add error handler
+        application.add_error_handler(error_handler)
+        
+        # Start bot
+        bot_username = application.bot.username
+        print("=" * 50)
+        print("🤖 Instagram Telegram Bot")
+        print("=" * 50)
+        print(f"Bot Token: {TOKEN[:10]}...")
+        print(f"Bot Username: @{bot_username}")
+        print(f"Log file: /tmp/instagram_bot.log")
+        print("=" * 50)
+        print("Starting bot...")
+        print("Press Ctrl+C to stop")
+        print("=" * 50)
+        
+        logger.info(f"Bot started with username: @{bot_username}")
+        
+        # Start polling
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}", exc_info=True)
+        print(f"ERROR: Failed to start bot: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
@@ -313,7 +405,7 @@ EOF
 # Create requirements.txt file
 echo "[7/10] Creating requirements.txt..."
 cat > requirements.txt << 'EOF'
-python-telegram-bot==20.7
+python-telegram-bot[job-queue]==20.7
 instaloader==4.11.0
 aiohttp==3.9.1
 EOF
@@ -325,57 +417,69 @@ pip install -r requirements.txt
 # Make bot.py executable
 chmod +x bot.py
 
+# Setup bot token
+echo "[9/10] Setting up bot configuration..."
+echo ""
+echo "=========================================="
+echo "Bot Configuration"
+echo "=========================================="
+echo ""
+
+# Check if running as root
+if [ "$CURRENT_USER" = "root" ]; then
+    USER_HOME="/root"
+else
+    USER_HOME="/home/$CURRENT_USER"
+fi
+
+# Get bot token
+read -p "Enter your Telegram Bot Token (from @BotFather): " BOT_TOKEN
+
+if [ -z "$BOT_TOKEN" ] || [ "$BOT_TOKEN" = "YOUR_BOT_TOKEN_HERE" ]; then
+    echo "⚠️  WARNING: No valid token provided!"
+    echo "You MUST set the bot token manually."
+    echo ""
+    echo "Create .env file:"
+    echo "echo 'TELEGRAM_BOT_TOKEN=your_token_here' > $PROJECT_DIR/.env"
+    echo ""
+    echo "Or set environment variable:"
+    echo "export TELEGRAM_BOT_TOKEN=your_token_here"
+else
+    # Create .env file
+    echo "TELEGRAM_BOT_TOKEN=$BOT_TOKEN" > .env
+    chmod 600 .env
+    echo "✅ Bot token saved to .env file"
+fi
+
 # Create systemd service file
-echo "[9/10] Creating systemd service file..."
+echo "[10/10] Creating systemd service file..."
 cat > bot.service << EOF
 [Unit]
 Description=Instagram Telegram Bot
 After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
-User=$USER
-WorkingDirectory=/home/$USER/instagram-bot
-Environment="PATH=/home/$USER/instagram-bot/venv/bin"
-ExecStart=/home/$USER/instagram-bot/venv/bin/python3 /home/$USER/instagram-bot/bot.py
+User=$CURRENT_USER
+WorkingDirectory=$PROJECT_DIR
+Environment="PATH=$PROJECT_DIR/venv/bin"
+EnvironmentFile=$PROJECT_DIR/.env
+ExecStart=$PROJECT_DIR/venv/bin/python3 $PROJECT_DIR/bot.py
 Restart=always
 RestartSec=10
 StandardOutput=syslog
 StandardError=syslog
 SyslogIdentifier=instagram-bot
 
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+
 [Install]
 WantedBy=multi-user.target
 EOF
-
-# Setup bot token
-echo "[10/10] Setting up bot configuration..."
-echo ""
-echo "=========================================="
-echo "Bot Configuration"
-echo "=========================================="
-echo ""
-echo "To get your Telegram Bot Token:"
-echo "1. Open Telegram and search for @BotFather"
-echo "2. Send /newbot command"
-echo "3. Follow instructions to create a new bot"
-echo "4. Copy the token you receive"
-echo ""
-read -p "Enter your Telegram Bot Token: " BOT_TOKEN
-
-if [ -z "$BOT_TOKEN" ]; then
-    echo "⚠️  No token provided. You need to manually add it later."
-    echo "Edit bot.py and replace 'YOUR_BOT_TOKEN_HERE' with your token"
-else
-    # Create environment file
-    echo "TELEGRAM_BOT_TOKEN=$BOT_TOKEN" > .env
-    
-    # Update bot.service with token
-    sed -i "s|User=\$USER|User=$USER|g" bot.service
-    sed -i "s|WorkingDirectory=/home/\$USER/instagram-bot|WorkingDirectory=/home/$USER/instagram-bot|g" bot.service
-    sed -i "s|Environment=\"PATH=/home/\$USER/instagram-bot/venv/bin\"|Environment=\"PATH=/home/$USER/instagram-bot/venv/bin\"\nEnvironment=\"TELEGRAM_BOT_TOKEN=$BOT_TOKEN\"|g" bot.service
-    sed -i "s|ExecStart=/home/\$USER/instagram-bot/venv/bin/python3|ExecStart=/home/$USER/instagram-bot/venv/bin/python3|g" bot.service
-fi
 
 # Setup complete
 echo ""
@@ -383,27 +487,43 @@ echo "=========================================="
 echo "✅ Installation completed successfully!"
 echo "=========================================="
 echo ""
-echo "📁 Project location: /home/$USER/instagram-bot"
+echo "📁 Project location: $PROJECT_DIR"
 echo ""
-echo "To start the bot manually:"
-echo "cd /home/$USER/instagram-bot"
-echo "source venv/bin/activate"
-echo "python3 bot.py"
+echo "📝 Quick Start Guide:"
 echo ""
-echo "📋 To run as a system service:"
-echo "sudo cp /home/$USER/instagram-bot/bot.service /etc/systemd/system/"
-echo "sudo systemctl daemon-reload"
-echo "sudo systemctl enable bot.service"
-echo "sudo systemctl start bot.service"
-echo "sudo systemctl status bot.service"
+echo "1. First, test the bot manually:"
+echo "   cd $PROJECT_DIR"
+echo "   source venv/bin/activate"
+echo "   python3 bot.py"
 echo ""
-echo "📊 To view logs:"
-echo "sudo journalctl -u bot.service -f"
+echo "2. If manual test works, set up as service:"
+echo "   sudo cp $PROJECT_DIR/bot.service /etc/systemd/system/"
+echo "   sudo systemctl daemon-reload"
+echo "   sudo systemctl enable bot.service"
+echo "   sudo systemctl start bot.service"
 echo ""
-echo "🔧 To stop the bot:"
-echo "sudo systemctl stop bot.service"
+echo "3. Check bot status:"
+echo "   sudo systemctl status bot.service"
+echo ""
+echo "4. View logs:"
+echo "   sudo journalctl -u bot.service -f"
+echo "   OR"
+echo "   tail -f /tmp/instagram_bot.log"
+echo ""
+echo "🔧 Troubleshooting:"
+echo "   • Check token: cat $PROJECT_DIR/.env"
+echo "   • Test dependencies: python3 -c \"import instaloader; print('OK')\""
+echo "   • Check Python version: python3 --version"
 echo ""
 echo "=========================================="
-echo "🤖 Bot is ready! Open Telegram and start"
-echo "chatting with your bot."
+echo "🤖 Bot Setup Instructions:"
+echo "=========================================="
+echo ""
+echo "1. Open Telegram"
+echo "2. Search for your bot username"
+echo "3. Send /start command"
+echo "4. Send an Instagram link to test"
+echo ""
+echo "Need help? Check logs:"
+echo "tail -f /tmp/instagram_bot.log"
 echo "=========================================="
