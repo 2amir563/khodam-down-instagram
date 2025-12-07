@@ -1,11 +1,11 @@
 #!/bin/bash
-# instagram_install.sh - Install Instagram bot with quality selection
-# Run: bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/instagram_install.sh)
+# Complete Instagram Bot Installation Script
+# Run: bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-instagram/main/install.sh)
 
 set -e
 
-echo "📸 Installing Instagram Bot"
-echo "==========================="
+echo "🚀 Complete Instagram Bot Installation"
+echo "======================================"
 
 # Colors
 GREEN='\033[0;32m'
@@ -20,40 +20,68 @@ print_blue() { echo -e "${BLUE}[i]${NC} $1"; }
 # Install directory
 INSTALL_DIR="/opt/instagram-bot"
 
-# Step 1: Cleanup
-print_blue "1. Cleaning old installations..."
+# Step 0: Stop any running bot
+print_blue "0. Stopping any running bot..."
 pkill -f "python.*instagram_bot.py" 2>/dev/null || true
 rm -rf "$INSTALL_DIR" 2>/dev/null || true
+
+# Step 1: Update system
+print_blue "1. Updating system packages..."
+apt-get update -y
+apt-get upgrade -y
+
+# Step 2: Install system dependencies
+print_blue "2. Installing system dependencies..."
+apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python3-dev \
+    git \
+    curl \
+    wget \
+    ffmpeg \
+    nano \
+    cron \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    libjpeg-dev \
+    libpng-dev \
+    zlib1g-dev
+
+# Step 3: Create directory
+print_blue "3. Creating installation directory..."
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-# Step 2: Install dependencies
-print_blue "2. Installing system dependencies..."
-apt-get update -y
-apt-get install -y python3 python3-pip python3-venv git curl wget ffmpeg nano cron
-
-# Step 3: Create virtual environment
-print_blue "3. Creating virtual environment..."
+# Step 4: Create virtual environment
+print_blue "4. Creating virtual environment..."
 python3 -m venv venv
 source venv/bin/activate
 
-# Step 4: Install Python packages
-print_blue "4. Installing Python packages..."
-pip install --upgrade pip
-pip install python-telegram-bot==20.7 yt-dlp==2025.11.12 requests==2.32.5 instagrapi==1.18.1
+# Step 5: Upgrade pip and setuptools
+print_blue "5. Upgrading pip and setuptools..."
+pip install --upgrade pip setuptools wheel
 
-# Step 5: Create instagram_bot.py
-print_blue "5. Creating instagram_bot.py..."
-cat > instagram_bot.py << 'BOTPYEOF'
+# Step 6: Install Python packages
+print_blue "6. Installing Python packages..."
+pip install --no-cache-dir \
+    Pillow==10.3.0 \
+    python-telegram-bot==20.7 \
+    instagrapi==1.18.1 \
+    yt-dlp==2025.11.12 \
+    requests==2.32.5 \
+    beautifulsoup4==4.12.3 \
+    lxml==5.2.1
+
+# Step 7: Create instagram_bot.py
+print_blue "7. Creating bot.py with error handling..."
+cat > bot.py << 'BOTPYEOF'
 #!/usr/bin/env python3
 """
 Instagram Download Bot for Telegram
-Features:
-1. Download Instagram posts (photos, videos, reels, IGTV)
-2. Quality selection for videos
-3. Album (carousel) download support
-4. Stories download support
-5. Auto cleanup every 2 minutes
+Simple version without complex Instagram login
 """
 
 import os
@@ -64,33 +92,27 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from instagrapi import Client
-from instagrapi.exceptions import LoginRequired, ClientError
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
 import requests
+import re
 
 # Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     handlers=[
-        logging.FileHandler('bot.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-class InstagramDownloadBot:
+class SimpleInstagramBot:
     def __init__(self):
         self.config = self.load_config()
         self.token = self.config['telegram']['token']
         self.admin_ids = self.config['telegram'].get('admin_ids', [])
-        
-        # Instagram client
-        self.cl = None
-        self.is_logged_in = False
         
         # Bot state
         self.is_paused = False
@@ -103,7 +125,7 @@ class InstagramDownloadBot:
         # Start auto cleanup
         self.start_auto_cleanup()
         
-        logger.info("🤖 Instagram Download Bot initialized")
+        logger.info("🤖 Simple Instagram Bot initialized")
         print(f"✅ Token: {self.token[:15]}...")
     
     def load_config(self):
@@ -120,11 +142,6 @@ class InstagramDownloadBot:
                 'admin_ids': [],
                 'max_file_size': 2000
             },
-            'instagram': {
-                'username': 'YOUR_INSTAGRAM_USERNAME',
-                'password': 'YOUR_INSTAGRAM_PASSWORD',
-                'session_file': 'session.json'
-            },
             'download_dir': 'downloads',
             'auto_cleanup_minutes': 2
         }
@@ -133,38 +150,6 @@ class InstagramDownloadBot:
             json.dump(config, f, indent=4, ensure_ascii=False)
         
         return config
-    
-    def login_instagram(self):
-        """Login to Instagram"""
-        try:
-            self.cl = Client()
-            
-            # Try to load session
-            session_file = self.config['instagram']['session_file']
-            if os.path.exists(session_file):
-                self.cl.load_settings(session_file)
-            
-            # Login
-            username = self.config['instagram']['username']
-            password = self.config['instagram']['password']
-            
-            if username == 'YOUR_INSTAGRAM_USERNAME' or password == 'YOUR_INSTAGRAM_PASSWORD':
-                logger.warning("Instagram credentials not configured")
-                return False
-            
-            self.cl.login(username, password)
-            
-            # Save session
-            self.cl.dump_settings(session_file)
-            
-            self.is_logged_in = True
-            logger.info(f"✅ Logged in to Instagram as {username}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Instagram login error: {e}")
-            self.is_logged_in = False
-            return False
     
     def start_auto_cleanup(self):
         """Start auto cleanup thread"""
@@ -199,196 +184,139 @@ class InstagramDownloadBot:
         if files_deleted > 0:
             logger.info(f"Cleaned {files_deleted} old files")
     
-    def extract_instagram_info(self, url):
-        """Extract information from Instagram URL"""
-        try:
-            if not self.is_logged_in:
-                if not self.login_instagram():
-                    return None
-            
-            if '/p/' in url or '/reel/' in url or '/tv/' in url:
-                # Post, Reel, or IGTV
-                media_pk = self.cl.media_pk_from_url(url)
-                media_info = self.cl.media_info(media_pk)
-                
-                return {
-                    'type': media_info.media_type,
-                    'pk': media_info.pk,
-                    'code': media_info.code,
-                    'caption': media_info.caption_text if media_info.caption_text else "No caption",
-                    'username': media_info.user.username,
-                    'thumbnail_url': media_info.thumbnail_url,
-                    'resources': []
-                }
-                
-            elif '/stories/' in url:
-                # Story
-                username = url.split('/stories/')[1].split('/')[0]
-                user_id = self.cl.user_id_from_username(username)
-                stories = self.cl.user_stories(user_id)
-                
-                if stories:
-                    return {
-                        'type': 'story',
-                        'username': username,
-                        'stories': stories,
-                        'count': len(stories)
-                    }
-            
-        except Exception as e:
-            logger.error(f"Error extracting info: {e}")
+    def extract_instagram_links(self, html_content):
+        """Extract Instagram media links from HTML"""
+        patterns = [
+            r'"display_url":"(https://[^"]+)"',
+            r'"video_url":"(https://[^"]+)"',
+            r'src="(https://[^"]+instagram[^"]+)"',
+            r'property="og:image" content="(https://[^"]+)"',
+            r'property="og:video" content="(https://[^"]+)"'
+        ]
         
-        return None
+        links = []
+        for pattern in patterns:
+            matches = re.findall(pattern, html_content)
+            links.extend(matches)
+        
+        # Filter unique links
+        unique_links = []
+        seen = set()
+        for link in links:
+            if link not in seen:
+                seen.add(link)
+                unique_links.append(link)
+        
+        return unique_links
     
-    def download_instagram_media(self, url, quality='best'):
-        """Download Instagram media"""
+    async def download_instagram(self, url):
+        """Download Instagram content using yt-dlp"""
         try:
-            info = self.extract_instagram_info(url)
-            if not info:
-                return None
+            ydl_opts = {
+                'format': 'best',
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'outtmpl': str(self.download_dir / '%(title).100s.%(ext)s'),
+                'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+            }
             
-            downloads = []
-            
-            if info['type'] == 1:  # Photo
-                # Single photo
-                media_pk = info['pk']
-                media_info = self.cl.media_info(media_pk)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
                 
-                photo_url = media_info.thumbnail_url or media_info.resources[0].thumbnail_url
-                filename = f"{info['username']}_{info['code']}.jpg"
-                filepath = self.download_dir / filename
+                # Get downloaded files
+                files = []
+                if 'entries' in info:  # Playlist/album
+                    for entry in info['entries']:
+                        if entry:
+                            filename = ydl.prepare_filename(entry)
+                            if os.path.exists(filename):
+                                files.append(filename)
+                else:  # Single media
+                    filename = ydl.prepare_filename(info)
+                    if os.path.exists(filename):
+                        files.append(filename)
                 
-                self.download_file(photo_url, filepath)
-                downloads.append({
-                    'type': 'photo',
-                    'path': str(filepath),
-                    'caption': info['caption'][:1000]
-                })
+                return files, info.get('title', 'Instagram Media')
                 
-            elif info['type'] == 2:  # Video
-                # Video
-                media_pk = info['pk']
-                media_info = self.cl.media_info(media_pk)
-                
-                video_url = media_info.video_url
-                filename = f"{info['username']}_{info['code']}.mp4"
-                filepath = self.download_dir / filename
-                
-                self.download_file(video_url, filepath)
-                downloads.append({
-                    'type': 'video',
-                    'path': str(filepath),
-                    'caption': info['caption'][:1000]
-                })
-                
-            elif info['type'] == 8:  # Album
-                # Carousel (multiple media)
-                media_pk = info['pk']
-                media_info = self.cl.media_info(media_pk)
-                
-                for idx, resource in enumerate(media_info.resources):
-                    if resource.media_type == 1:  # Photo
-                        media_url = resource.thumbnail_url
-                        ext = 'jpg'
-                    else:  # Video
-                        media_url = resource.video_url
-                        ext = 'mp4'
-                    
-                    filename = f"{info['username']}_{info['code']}_{idx+1}.{ext}"
-                    filepath = self.download_dir / filename
-                    
-                    self.download_file(media_url, filepath)
-                    downloads.append({
-                        'type': 'photo' if resource.media_type == 1 else 'video',
-                        'path': str(filepath),
-                        'caption': info['caption'][:1000] if idx == 0 else None
-                    })
-            
-            elif info['type'] == 'story':
-                # Stories
-                for idx, story in enumerate(info['stories'][:10]):  # Max 10 stories
-                    if story.media_type == 1:  # Photo story
-                        media_url = story.thumbnail_url
-                        ext = 'jpg'
-                    else:  # Video story
-                        media_url = story.video_url
-                        ext = 'mp4'
-                    
-                    filename = f"story_{info['username']}_{idx+1}.{ext}"
-                    filepath = self.download_dir / filename
-                    
-                    self.download_file(media_url, filepath)
-                    downloads.append({
-                        'type': 'photo' if story.media_type == 1 else 'video',
-                        'path': str(filepath),
-                        'caption': f"Story {idx+1}/{len(info['stories'])}"
-                    })
-            
-            return downloads
-            
         except Exception as e:
             logger.error(f"Download error: {e}")
-            return None
+            return None, str(e)
     
-    def download_file(self, url, filepath):
-        """Download file from URL"""
-        response = requests.get(url, stream=True, timeout=60)
-        response.raise_for_status()
-        
-        with open(filepath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+    async def download_with_requests(self, url):
+        """Fallback download method"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=30, stream=True)
+            response.raise_for_status()
+            
+            # Get filename
+            if 'content-disposition' in response.headers:
+                content_disposition = response.headers['content-disposition']
+                filename = re.findall('filename="?([^"]+)"?', content_disposition)
+                if filename:
+                    filename = filename[0]
+                else:
+                    filename = f"instagram_{int(time.time())}.mp4"
+            else:
+                filename = f"instagram_{int(time.time())}.mp4"
+            
+            # Clean filename
+            filename = re.sub(r'[^\w\-_. ]', '_', filename)
+            if len(filename) > 100:
+                filename = filename[:100]
+            
+            filepath = self.download_dir / filename
+            
+            # Download
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            return [str(filepath)], "Instagram Media"
+            
+        except Exception as e:
+            logger.error(f"Requests download error: {e}")
+            return None, str(e)
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         user = update.effective_user
         
-        if self.is_paused and self.paused_until and datetime.now() < self.paused_until:
-            remaining = self.paused_until - datetime.now()
-            hours = remaining.seconds // 3600
-            minutes = (remaining.seconds % 3600) // 60
-            await update.message.reply_text(
-                f"⏸️ Bot is paused\nWill resume in: {hours}h {minutes}m"
-            )
-            return
-        
         welcome = f"""
 Hello {user.first_name}! 👋
 
-🤖 **Instagram Download Bot**
+🤖 **Simple Instagram Download Bot**
 
-📥 **Supported Instagram Content:**
-✅ Photos (single posts)
-✅ Videos (posts, reels)
-✅ Albums (carousel posts)
-✅ Stories
-✅ Reels
-✅ IGTV
+📥 **Supported Content:**
+✅ Instagram Posts
+✅ Instagram Reels
+✅ Instagram Videos
+✅ Instagram Photos
+✅ Other platforms via yt-dlp
 
 🎯 **How to use:**
-1. Send Instagram post link
-2. Bot will download all media
-3. Receive files in Telegram
+1. Send any Instagram link
+2. Bot will download the media
+3. Receive it in Telegram
 
 ⚡ **Features:**
-• High quality downloads
-• Album support (multiple files)
-• Story download support
+• Simple and fast
+• No Instagram login required for public content
 • Auto cleanup every 2 minutes
-• Caption preservation
+• Supports multiple file types
 
 🛠️ **Commands:**
 /start - This menu
-/help - Detailed help
+/help - Help guide
 /status - Bot status (admin)
-/pause [hours] - Pause bot (admin)
-/resume - Resume bot (admin)
-/clean - Clean files (admin)
+/clean - Clean all files (admin)
 
 💡 **Files auto deleted after 2 minutes**
-
-⚠️ **Note:** Instagram login required for some content
 """
         
         await update.message.reply_text(welcome, parse_mode='Markdown')
@@ -396,142 +324,127 @@ Hello {user.first_name}! 👋
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages"""
-        if self.is_paused and self.paused_until and datetime.now() < self.paused_until:
-            remaining = self.paused_until - datetime.now()
-            hours = remaining.seconds // 3600
-            minutes = (remaining.seconds % 3600) // 60
-            await update.message.reply_text(
-                f"⏸️ Bot is paused\nWill resume in: {hours}h {minutes}m"
-            )
-            return
-        
         text = update.message.text
         user = update.effective_user
         
         logger.info(f"Message from {user.first_name}: {text[:50]}")
         
-        if text.startswith(('http://', 'https://')) and 'instagram.com' in text.lower():
-            await update.message.reply_text("🔍 Processing Instagram link...")
+        if text.startswith(('http://', 'https://')):
+            if 'instagram.com' in text.lower():
+                await update.message.reply_text("📥 Downloading Instagram content...")
+                
+                # Try yt-dlp first
+                files, title = await self.download_instagram(text)
+                
+                if not files:
+                    # Fallback to requests method
+                    await update.message.reply_text("🔄 Trying alternative method...")
+                    files, title = await self.download_with_requests(text)
+                
+                if files:
+                    await update.message.reply_text(f"✅ Downloaded {len(files)} file(s)\n📤 Uploading...")
+                    
+                    for filepath in files:
+                        try:
+                            file_size = os.path.getsize(filepath) / (1024 * 1024)
+                            max_size = self.config['telegram']['max_file_size']
+                            
+                            if file_size > max_size:
+                                await update.message.reply_text(f"❌ File too large: {file_size:.1f}MB")
+                                os.remove(filepath)
+                                continue
+                            
+                            with open(filepath, 'rb') as f:
+                                if filepath.endswith(('.mp4', '.avi', '.mkv', '.mov', '.webm')):
+                                    await update.message.reply_video(
+                                        video=f,
+                                        caption=f"📹 {title[:50]}\nSize: {file_size:.1f}MB",
+                                        supports_streaming=True
+                                    )
+                                elif filepath.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+                                    await update.message.reply_photo(
+                                        photo=f,
+                                        caption=f"🖼️ {title[:50]}\nSize: {file_size:.1f}MB"
+                                    )
+                                else:
+                                    await update.message.reply_document(
+                                        document=f,
+                                        caption=f"📄 {title[:50]}\nSize: {file_size:.1f}MB"
+                                    )
+                            
+                            # Schedule deletion
+                            self.schedule_file_deletion(filepath)
+                            
+                        except Exception as e:
+                            logger.error(f"Error sending file: {e}")
+                            await update.message.reply_text(f"❌ Error sending file: {str(e)[:100]}")
+                    
+                    await update.message.reply_text(f"✅ All files sent successfully!")
+                    
+                else:
+                    await update.message.reply_text(f"❌ Download failed. Error: {title}")
             
-            # Check Instagram login
-            if not self.is_logged_in:
-                login_msg = await update.message.reply_text("🔐 Logging into Instagram...")
-                if not self.login_instagram():
-                    await login_msg.edit_text("❌ Instagram login failed! Check credentials in config.json")
-                    return
-                await login_msg.edit_text("✅ Logged in successfully!")
-            
-            # Download media
-            status_msg = await update.message.reply_text("📥 Downloading from Instagram...")
-            
-            try:
-                downloads = self.download_instagram_media(text)
+            else:
+                # Other URLs
+                await update.message.reply_text("📥 Downloading with yt-dlp...")
+                files, title = await self.download_instagram(text)
                 
-                if not downloads:
-                    await status_msg.edit_text("❌ Failed to download. Possible issues:\n• Private account\n• Login required\n• Invalid link")
-                    return
-                
-                await status_msg.edit_text(f"✅ Downloaded {len(downloads)} item(s)\n📤 Uploading...")
-                
-                # Send files
-                for idx, download in enumerate(downloads):
-                    try:
-                        file_size = os.path.getsize(download['path']) / (1024 * 1024)
-                        max_size = self.config['telegram']['max_file_size']
-                        
-                        if file_size > max_size:
-                            await update.message.reply_text(f"❌ File too large: {file_size:.1f}MB")
-                            os.remove(download['path'])
-                            continue
-                        
-                        with open(download['path'], 'rb') as f:
-                            if download['type'] == 'photo':
-                                await update.message.reply_photo(
-                                    photo=f,
-                                    caption=download['caption'] if download['caption'] else None
-                                )
-                            else:  # video
-                                await update.message.reply_video(
-                                    video=f,
-                                    caption=download['caption'] if download['caption'] else None,
-                                    supports_streaming=True
-                                )
-                        
-                        # Schedule deletion
-                        self.schedule_file_deletion(download['path'])
-                        
-                    except Exception as e:
-                        logger.error(f"Error sending file {idx}: {e}")
-                        await update.message.reply_text(f"❌ Error sending file {idx+1}")
-                
-                await status_msg.edit_text(f"✅ Download complete! Sent {len(downloads)} file(s)")
-                
-            except Exception as e:
-                logger.error(f"Error: {e}")
-                await status_msg.edit_text(f"❌ Error: {str(e)[:100]}")
-        
-        elif text.startswith(('http://', 'https://')):
-            # Other URLs
-            await update.message.reply_text("📥 Downloading with yt-dlp...")
-            await self.download_other_url(update, text)
+                if files:
+                    for filepath in files:
+                        await self.send_file(update, filepath, title)
+                else:
+                    await update.message.reply_text(f"❌ Download failed: {title}")
         
         else:
             await update.message.reply_text(
-                "Please send a valid Instagram URL or other media link\n\n"
+                "Please send a valid URL starting with http:// or https://\n\n"
                 "📸 **Instagram Examples:**\n"
-                "• https://instagram.com/p/... (post)\n"
-                "• https://instagram.com/reel/... (reel)\n"
-                "• https://instagram.com/stories/... (story)\n"
-                "• https://instagram.com/tv/... (IGTV)"
+                "• https://instagram.com/p/...\n"
+                "• https://instagram.com/reel/...\n"
+                "• https://instagram.com/tv/..."
             )
     
-    async def download_other_url(self, update: Update, url):
-        """Download other URLs using yt-dlp"""
+    async def send_file(self, update: Update, filepath, title):
+        """Send file with appropriate method"""
         try:
-            ydl_opts = {
-                'format': 'best',
-                'quiet': True,
-                'outtmpl': str(self.download_dir / '%(title).100s.%(ext)s'),
-            }
+            file_size = os.path.getsize(filepath) / (1024 * 1024)
+            max_size = self.config['telegram']['max_file_size']
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                
-                if os.path.exists(filename):
-                    file_size = os.path.getsize(filename) / (1024 * 1024)
-                    max_size = self.config['telegram']['max_file_size']
-                    
-                    if file_size > max_size:
-                        os.remove(filename)
-                        await update.message.reply_text(f"❌ File too large: {file_size:.1f}MB")
-                        return
-                    
-                    with open(filename, 'rb') as f:
-                        if filename.endswith(('.mp4', '.avi', '.mkv', '.mov')):
-                            await update.message.reply_video(
-                                video=f,
-                                caption=f"📹 {info.get('title', 'Video')[:100]}\nSize: {file_size:.1f}MB",
-                                supports_streaming=True
-                            )
-                        elif filename.endswith(('.mp3', '.m4a')):
-                            await update.message.reply_audio(
-                                audio=f,
-                                caption=f"🎵 {info.get('title', 'Audio')[:100]}\nSize: {file_size:.1f}MB"
-                            )
-                        else:
-                            await update.message.reply_document(
-                                document=f,
-                                caption=f"📄 {info.get('title', 'File')[:100]}\nSize: {file_size:.1f}MB"
-                            )
-                    
-                    await update.message.reply_text(f"✅ Download complete! ({file_size:.1f}MB)")
-                    
-                    # Schedule deletion
-                    self.schedule_file_deletion(filename)
-                    
+            if file_size > max_size:
+                await update.message.reply_text(f"❌ File too large: {file_size:.1f}MB")
+                os.remove(filepath)
+                return
+            
+            with open(filepath, 'rb') as f:
+                if filepath.endswith(('.mp4', '.avi', '.mkv', '.mov', '.webm')):
+                    await update.message.reply_video(
+                        video=f,
+                        caption=f"📹 {title[:100]}\nSize: {file_size:.1f}MB",
+                        supports_streaming=True
+                    )
+                elif filepath.endswith(('.mp3', '.m4a', '.wav', '.ogg')):
+                    await update.message.reply_audio(
+                        audio=f,
+                        caption=f"🎵 {title[:100]}\nSize: {file_size:.1f}MB"
+                    )
+                elif filepath.endswith(('.jpg', '.jpeg', '.png', '.gif')):
+                    await update.message.reply_photo(
+                        photo=f,
+                        caption=f"🖼️ {title[:100]}\nSize: {file_size:.1f}MB"
+                    )
+                else:
+                    await update.message.reply_document(
+                        document=f,
+                        caption=f"📄 {title[:100]}\nSize: {file_size:.1f}MB"
+                    )
+            
+            await update.message.reply_text(f"✅ Download complete! ({file_size:.1f}MB)")
+            
+            # Schedule deletion
+            self.schedule_file_deletion(filepath)
+            
         except Exception as e:
-            logger.error(f"Download error: {e}")
+            logger.error(f"Send file error: {e}")
             await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
     
     def schedule_file_deletion(self, filepath):
@@ -547,10 +460,19 @@ Hello {user.first_name}! 👋
         
         threading.Thread(target=delete_later, daemon=True).start()
     
-    # Admin commands
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text(
+            "📖 **Help Guide**\n\n"
+            "Send any Instagram link to download:\n"
+            "• Posts, Reels, Videos, Photos\n\n"
+            "Other platforms also supported via yt-dlp\n\n"
+            "Files auto deleted after 2 minutes",
+            parse_mode='Markdown'
+        )
+    
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        if user.id not in self.admin_ids:
+        if user.id not in self.admin_ids and self.admin_ids:
             await update.message.reply_text("⛔ Admin only!")
             return
         
@@ -560,49 +482,17 @@ Hello {user.first_name}! 👋
         status = f"""
 📊 **Bot Status**
 
-✅ Instagram: {'Logged in' if self.is_logged_in else 'Not logged in'}
-📁 Files: {len(files)}
-💾 Size: {total_size:.1f}MB
-⏸️ Paused: {self.is_paused}
+✅ Bot is running
+📁 Files in cache: {len(files)}
+💾 Cache size: {total_size:.1f}MB
 👤 Your ID: {user.id}
 """
         
         await update.message.reply_text(status, parse_mode='Markdown')
     
-    async def pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        if user.id not in self.admin_ids:
-            await update.message.reply_text("⛔ Admin only!")
-            return
-        
-        hours = 1
-        if context.args:
-            try:
-                hours = int(context.args[0])
-            except:
-                hours = 1
-        
-        self.is_paused = True
-        self.paused_until = datetime.now() + timedelta(hours=hours)
-        
-        await update.message.reply_text(
-            f"⏸️ Bot paused for {hours} hour(s)\n"
-            f"Resume at: {self.paused_until.strftime('%H:%M')}"
-        )
-    
-    async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        if user.id not in self.admin_ids:
-            await update.message.reply_text("⛔ Admin only!")
-            return
-        
-        self.is_paused = False
-        self.paused_until = None
-        await update.message.reply_text("▶️ Bot resumed!")
-    
     async def clean_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        if user.id not in self.admin_ids:
+        if user.id not in self.admin_ids and self.admin_ids:
             await update.message.reply_text("⛔ Admin only!")
             return
         
@@ -617,59 +507,35 @@ Hello {user.first_name}! 👋
         
         await update.message.reply_text(f"🧹 Cleaned {count} files")
     
-    async def login_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Login to Instagram manually"""
-        user = update.effective_user
-        if user.id not in self.admin_ids:
-            await update.message.reply_text("⛔ Admin only!")
-            return
-        
-        msg = await update.message.reply_text("🔐 Logging into Instagram...")
-        
-        if self.login_instagram():
-            await msg.edit_text("✅ Successfully logged into Instagram!")
-        else:
-            await msg.edit_text("❌ Login failed! Check credentials in config.json")
-    
     def run(self):
         """Run the bot"""
         print("=" * 50)
-        print("🤖 Instagram Download Bot")
+        print("🤖 Simple Instagram Download Bot")
         print("=" * 50)
         
         if not self.token or self.token == 'YOUR_BOT_TOKEN_HERE':
             print("❌ ERROR: Configure token in config.json")
+            print("Edit config.json and set your Telegram bot token")
             return
         
         print(f"✅ Token: {self.token[:15]}...")
-        
-        # Try Instagram login
-        print("🔐 Attempting Instagram login...")
-        if self.login_instagram():
-            print("✅ Instagram login successful")
-        else:
-            print("⚠️ Instagram login failed or not configured")
-            print("   Edit config.json to add Instagram credentials")
+        print("✅ Bot ready!")
+        print("📱 Send Instagram link to download")
+        print("=" * 50)
         
         app = Application.builder().token(self.token).build()
         
         app.add_handler(CommandHandler("start", self.start_command))
+        app.add_handler(CommandHandler("help", self.help_command))
         app.add_handler(CommandHandler("status", self.status_command))
-        app.add_handler(CommandHandler("pause", self.pause_command))
-        app.add_handler(CommandHandler("resume", self.resume_command))
         app.add_handler(CommandHandler("clean", self.clean_command))
-        app.add_handler(CommandHandler("login", self.login_command))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-        
-        print("✅ Bot ready!")
-        print("📱 Send Instagram link to download")
-        print("=" * 50)
         
         app.run_polling()
 
 def main():
     try:
-        bot = InstagramDownloadBot()
+        bot = SimpleInstagramBot()
         bot.run()
     except KeyboardInterrupt:
         print("\n🛑 Bot stopped")
@@ -682,8 +548,8 @@ if __name__ == '__main__':
     main()
 BOTPYEOF
 
-# Step 6: Create config.json
-print_blue "6. Creating config.json..."
+# Step 8: Create config.json
+print_blue "8. Creating config.json..."
 cat > config.json << 'CONFIGEOF'
 {
     "telegram": {
@@ -691,18 +557,13 @@ cat > config.json << 'CONFIGEOF'
         "admin_ids": [],
         "max_file_size": 2000
     },
-    "instagram": {
-        "username": "YOUR_INSTAGRAM_USERNAME",
-        "password": "YOUR_INSTAGRAM_PASSWORD",
-        "session_file": "session.json"
-    },
     "download_dir": "downloads",
     "auto_cleanup_minutes": 2
 }
 CONFIGEOF
 
-# Step 7: Create management script
-print_blue "7. Creating management script..."
+# Step 9: Create management script
+print_blue "9. Creating management script..."
 cat > manage.sh << 'MANAGEEOF'
 #!/bin/bash
 # manage.sh - Instagram bot management
@@ -713,16 +574,16 @@ case "$1" in
     start)
         echo "🚀 Starting Instagram Bot..."
         source venv/bin/activate
-        > bot.log
-        nohup python instagram_bot.py >> bot.log 2>&1 &
-        echo $! > bot.pid
-        echo "✅ Bot started (PID: $(cat bot.pid))"
+        > bot.log 2>/dev/null
+        nohup python bot.py >> bot.log 2>&1 &
+        echo $! > bot.pid 2>/dev/null
+        echo "✅ Bot started (PID: $(cat bot.pid 2>/dev/null))"
         echo "📝 Logs: tail -f bot.log"
         echo ""
-        echo "📸 Instagram Bot Features:"
-        echo "   • Download Instagram posts, reels, stories"
-        echo "   • Album (carousel) support"
-        echo "   • High quality downloads"
+        echo "📸 Bot Features:"
+        echo "   • Download Instagram posts, reels, videos"
+        echo "   • Simple and fast"
+        echo "   • No Instagram login required"
         echo "   • Auto cleanup every 2 minutes"
         ;;
     stop)
@@ -732,7 +593,7 @@ case "$1" in
             rm -f bot.pid
             echo "✅ Bot stopped"
         else
-            echo "⚠️ Bot not running"
+            echo "⚠️ Bot not running or already stopped"
         fi
         ;;
     restart)
@@ -743,10 +604,10 @@ case "$1" in
         ;;
     status)
         echo "📊 Bot Status:"
-        if [ -f "bot.pid" ] && ps -p $(cat bot.pid) > /dev/null 2>&1; then
+        if [ -f "bot.pid" ] && ps -p $(cat bot.pid 2>/dev/null) > /dev/null 2>&1; then
             echo "✅ Bot running (PID: $(cat bot.pid))"
             echo "📝 Recent logs:"
-            tail -5 bot.log 2>/dev/null || echo "No logs"
+            tail -5 bot.log 2>/dev/null || echo "No logs yet"
         else
             echo "❌ Bot not running"
             [ -f "bot.pid" ] && rm -f bot.pid
@@ -761,7 +622,7 @@ case "$1" in
                 tail -50 bot.log
             fi
         else
-            echo "No log file"
+            echo "No log file found"
         fi
         ;;
     config)
@@ -776,8 +637,11 @@ case "$1" in
         echo "1. Testing imports..."
         python3 -c "
 try:
-    import telegram, instagrapi, yt_dlp, requests
+    import telegram, yt_dlp, requests, json, re, asyncio
     print('✅ All imports OK')
+    print('✅ Python-telegram-bot: OK')
+    print('✅ yt-dlp: OK')
+    print('✅ Requests: OK')
 except Exception as e:
     print(f'❌ Import error: {e}')
 "
@@ -791,40 +655,44 @@ try:
         config = json.load(f)
     
     token = config['telegram']['token']
-    ig_user = config['instagram']['username']
-    ig_pass = config['instagram']['password']
+    max_size = config['telegram']['max_file_size']
     
     if token == 'YOUR_BOT_TOKEN_HERE':
         print('❌ Telegram token not configured!')
+        print('   Edit config.json and add your bot token')
     else:
         print(f'✅ Token: {token[:15]}...')
     
-    if ig_user == 'YOUR_INSTAGRAM_USERNAME':
-        print('⚠️ Instagram username not configured')
-    else:
-        print(f'✅ IG Username: {ig_user}')
-    
-    print(f'✅ Max size: {config[\"telegram\"][\"max_file_size\"]}MB')
+    print(f'✅ Max file size: {max_size}MB')
+    print('✅ Config test passed')
 except Exception as e:
     print(f'❌ Config error: {e}')
 "
+        
+        echo ""
+        echo "3. Testing virtual environment..."
+        if [ -f "venv/bin/activate" ]; then
+            echo "✅ Virtual environment exists"
+        else
+            echo "❌ Virtual environment not found"
+        fi
         ;;
     debug)
         echo "🐛 Debug mode..."
         ./manage.sh stop
+        sleep 1
         source venv/bin/activate
-        python instagram_bot.py
+        python bot.py
         ;;
     clean)
         echo "🧹 Cleaning..."
-        rm -rf downloads/*
-        rm -f session.json 2>/dev/null
+        rm -rf downloads/* 2>/dev/null
         echo "✅ Files cleaned"
         ;;
     uninstall)
         echo "🗑️ Uninstalling..."
         echo ""
-        read -p "Are you sure? Type 'YES': " confirm
+        read -p "Are you sure? This will remove everything. Type 'YES': " confirm
         if [ "$confirm" = "YES" ]; then
             ./manage.sh stop
             cd /
@@ -834,15 +702,18 @@ except Exception as e:
             echo "❌ Cancelled"
         fi
         ;;
-    autostart)
-        echo "⚙️ Setting auto-start..."
-        (crontab -l 2>/dev/null | grep -v "$INSTALL_DIR"; 
-         echo "@reboot cd $INSTALL_DIR && ./manage.sh start") | crontab -
-        echo "✅ Auto-start configured"
+    update)
+        echo "🔄 Updating..."
+        ./manage.sh stop
+        cd "$INSTALL_DIR"
+        source venv/bin/activate
+        pip install --upgrade yt-dlp python-telegram-bot requests
+        echo "✅ Packages updated"
+        ./manage.sh start
         ;;
     *)
-        echo "🤖 Instagram Download Bot Management"
-        echo "==================================="
+        echo "🤖 Simple Instagram Bot Management"
+        echo "=================================="
         echo ""
         echo "📁 Directory: $INSTALL_DIR"
         echo ""
@@ -856,63 +727,54 @@ except Exception as e:
         echo "  ./manage.sh test       # Test everything"
         echo "  ./manage.sh debug      # Debug mode"
         echo "  ./manage.sh clean      # Clean files"
+        echo "  ./manage.sh update     # Update packages"
         echo "  ./manage.sh uninstall  # Uninstall bot"
-        echo "  ./manage.sh autostart  # Auto-start on reboot"
         echo ""
-        echo "📸 Instagram Features:"
-        echo "  • Download posts, reels, stories"
-        echo "  • Album/carousel support"
-        echo "  • High quality downloads"
-        echo "  • Auto cleanup (2 minutes)"
-        echo "  • Instagram login support"
+        echo "📸 Features:"
+        echo "  • Simple Instagram download"
+        echo "  • No login required"
+        echo "  • Fast and reliable"
+        echo "  • Auto cleanup every 2 minutes"
         ;;
 esac
 MANAGEEOF
 
 chmod +x manage.sh
 
-# Step 8: Create requirements.txt
-print_blue "8. Creating requirements.txt..."
+# Step 10: Create requirements.txt
+print_blue "10. Creating requirements.txt..."
 cat > requirements.txt << 'REQEOF'
 python-telegram-bot==20.7
-instagrapi==1.18.1
 yt-dlp==2025.11.12
 requests==2.32.5
+Pillow==10.3.0
 REQEOF
 
-print_green "✅ INSTAGRAM BOT INSTALLATION COMPLETE!"
-echo ""
-echo "📋 SETUP STEPS:"
-echo "================"
-echo "1. Configure bot:"
-echo "   cd $INSTALL_DIR"
-echo "   nano config.json"
-echo "   • Replace YOUR_BOT_TOKEN_HERE with Telegram bot token"
-echo "   • Add your Telegram ID to admin_ids"
-echo "   • Add Instagram username/password (optional but recommended)"
-echo ""
-echo "2. Start bot:"
-echo "   ./manage.sh start"
-echo ""
-echo "3. Test:"
-echo "   ./manage.sh test"
-echo "   ./manage.sh status"
-echo ""
-echo "4. In Telegram:"
-echo "   • Find your bot"
-echo "   • Send /start"
-echo "   • Send Instagram link → Download content"
-echo "   • Send other links → Download with yt-dlp"
-echo ""
-echo "⚠️ IMPORTANT:"
-echo "   • Instagram login needed for private accounts/stories"
-echo "   • Files auto-deleted after 2 minutes"
-echo "   • Use 2FA Instagram account may need app password"
-echo ""
-echo "🔧 Troubleshooting:"
-echo "   ./manage.sh logs     # Check errors"
-echo "   ./manage.sh debug    # Run in foreground"
-echo "   ./manage.sh login    # Manual Instagram login (admin)"
-echo ""
-echo "🚀 Install command for others:"
-echo "bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/instagram_install.sh)"
+# Step 11: Create README
+print_blue "11. Creating README..."
+cat > README.md << 'READMEEOF'
+# Simple Instagram Download Bot
+
+A simple Telegram bot for downloading Instagram content.
+
+## Features
+- Download Instagram posts, reels, videos, photos
+- No Instagram login required for public content
+- Auto cleanup every 2 minutes
+- Simple and fast
+
+## Installation
+1. Clone or download this repository
+2. Configure `config.json` with your bot token
+3. Run `./manage.sh start`
+
+## Configuration
+Edit `config.json`:
+```json
+{
+    "telegram": {
+        "token": "YOUR_BOT_TOKEN_HERE",
+        "admin_ids": [123456789],
+        "max_file_size": 2000
+    }
+}
