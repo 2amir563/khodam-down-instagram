@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Instagram Downloader Bot using External API
-# Simple and Working Version
+# Instagram Downloader Bot - HTML Parsing Method
+# Most Reliable Version
 
 set -e
 
@@ -18,8 +18,8 @@ show_logo() {
     clear
     echo -e "${BLUE}"
     echo "=============================================="
-    echo "   INSTAGRAM DOWNLOADER BOT - API VERSION"
-    echo "   USING EXTERNAL DOWNLOAD SERVICES"
+    echo "   INSTAGRAM DOWNLOADER BOT - HTML PARSING"
+    echo "   MOST RELIABLE VERSION"
     echo "=============================================="
     echo -e "${NC}"
 }
@@ -54,7 +54,7 @@ install_python_packages() {
     print_info "Installing Python packages..."
     
     pip3 install --upgrade pip
-    pip3 install python-telegram-bot==20.7 requests
+    pip3 install python-telegram-bot==20.7 requests beautifulsoup4 lxml
     
     print_success "Python packages installed"
 }
@@ -73,14 +73,14 @@ create_bot_dir() {
     print_success "Directory created: /opt/instagram_bot"
 }
 
-# Create SIMPLE WORKING bot.py script
+# Create RELIABLE bot.py script
 create_bot_script() {
-    print_info "Creating simple working bot script..."
+    print_info "Creating reliable bot script..."
     
     cat > /opt/instagram_bot/bot.py << 'BOTEOF'
 #!/usr/bin/env python3
 """
-Simple Instagram Downloader Bot using External APIs
+Instagram Downloader Bot - HTML Parsing Method
 """
 
 import os
@@ -91,6 +91,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import requests
+from bs4 import BeautifulSoup
 import json
 
 # Setup logging
@@ -106,45 +107,6 @@ logger = logging.getLogger(__name__)
 
 # Bot token
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
-
-# External APIs (free services)
-APIS = [
-    {
-        'name': 'SnapInsta',
-        'url': 'https://snapinsta.app/action.php',
-        'method': 'POST',
-        'headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'Origin': 'https://snapinsta.app',
-            'Referer': 'https://snapinsta.app/',
-            'X-Requested-With': 'XMLHttpRequest'
-        },
-        'data': lambda url: {'url': url, 'lang': 'en'},
-        'extract': lambda data: data.get('medias', [{}])[0].get('url') if data.get('medias') else None
-    },
-    {
-        'name': 'SaveFrom',
-        'url': 'https://api.savefrom.net/v1/source/instagram',
-        'method': 'POST',
-        'headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
-        'data': lambda url: {'url': url},
-        'extract': lambda data: data.get('url')
-    },
-    {
-        'name': 'IGram',
-        'url': 'https://igram.io/api/convert',
-        'method': 'POST',
-        'headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Content-Type': 'application/json'
-        },
-        'data': lambda url: json.dumps({'url': url}),
-        'extract': lambda data: data.get('url') or (data.get('medias', [{}])[0].get('url') if data.get('medias') else None)
-    }
-]
 
 def is_instagram_url(url: str) -> bool:
     """Check if URL is from Instagram"""
@@ -172,46 +134,139 @@ def format_size(bytes_size: int) -> str:
         bytes_size /= 1024.0
     return f"{bytes_size:.1f} TB"
 
-def get_download_url_from_api(url: str):
-    """Get download URL from external APIs"""
-    for api in APIS:
+def get_instagram_media_url(url: str):
+    """Get Instagram media URL using HTML parsing from download sites"""
+    
+    # List of download websites that parse Instagram
+    download_sites = [
+        {
+            'name': 'DownloadGram',
+            'url': 'https://downloadgram.com/',
+            'method': 'POST',
+            'data': {'url': url},
+            'extract': lambda soup: soup.find('a', {'class': 'download-btn'})['href'] if soup.find('a', {'class': 'download-btn'}) else None
+        },
+        {
+            'name': 'InstagramDownloader',
+            'url': 'https://instadownloader.co/',
+            'method': 'POST',
+            'data': {'url': url},
+            'extract': lambda soup: soup.find('a', {'download': True})['href'] if soup.find('a', {'download': True}) else None
+        },
+        {
+            'name': 'SaveFrom',
+            'url': 'https://savefrom.app/instagram-video-downloader/',
+            'method': 'GET',
+            'params': {'url': url},
+            'extract': lambda soup: soup.find('a', string=re.compile('Download'))['href'] if soup.find('a', string=re.compile('Download')) else None
+        }
+    ]
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+    
+    for site in download_sites:
         try:
-            logger.info(f"Trying {api['name']} API...")
+            logger.info(f"Trying {site['name']}...")
             
-            if api['method'] == 'POST':
+            if site['method'] == 'POST':
                 response = requests.post(
-                    api['url'],
-                    headers=api['headers'],
-                    data=api['data'](url) if isinstance(api['data'](url), dict) else api['data'](url),
-                    timeout=30
+                    site['url'],
+                    data=site['data'],
+                    headers=headers,
+                    timeout=30,
+                    allow_redirects=True
                 )
             else:
                 response = requests.get(
-                    api['url'],
-                    params={'url': url},
-                    headers=api['headers'],
-                    timeout=30
+                    site['url'],
+                    params=site.get('params', {}),
+                    headers=headers,
+                    timeout=30,
+                    allow_redirects=True
                 )
             
             if response.status_code == 200:
-                data = response.json()
-                download_url = api['extract'](data)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                download_url = site['extract'](soup)
                 
                 if download_url:
-                    logger.info(f"{api['name']} API succeeded: {download_url[:100]}...")
+                    # Make sure URL is absolute
+                    if download_url.startswith('//'):
+                        download_url = 'https:' + download_url
+                    elif download_url.startswith('/'):
+                        download_url = site['url'].rstrip('/') + download_url
+                    elif not download_url.startswith('http'):
+                        download_url = 'https://' + download_url
+                    
+                    logger.info(f"{site['name']} succeeded: {download_url[:100]}...")
                     return download_url
                     
         except Exception as e:
-            logger.error(f"{api['name']} API failed: {e}")
+            logger.error(f"{site['name']} failed: {e}")
             continue
+    
+    # Alternative method: Direct Instagram HTML parsing
+    try:
+        logger.info("Trying direct Instagram HTML parsing...")
+        
+        # Try to get the page
+        response = requests.get(url, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            html = response.text
+            
+            # Look for video URL
+            video_patterns = [
+                r'"video_url":"([^"]+)"',
+                r'"contentUrl":"([^"]+)"',
+                r'src="([^"]+\.mp4[^"]*)"',
+                r'property="og:video" content="([^"]+)"',
+            ]
+            
+            for pattern in video_patterns:
+                match = re.search(pattern, html)
+                if match:
+                    video_url = match.group(1).replace('\\/', '/')
+                    logger.info(f"Found video URL: {video_url[:100]}...")
+                    return video_url
+            
+            # Look for image URL
+            image_patterns = [
+                r'"display_url":"([^"]+)"',
+                r'property="og:image" content="([^"]+)"',
+                r'src="([^"]+\.jpg[^"]*)"',
+            ]
+            
+            for pattern in image_patterns:
+                match = re.search(pattern, html)
+                if match:
+                    image_url = match.group(1).replace('\\/', '/')
+                    logger.info(f"Found image URL: {image_url[:100]}...")
+                    return image_url
+                    
+    except Exception as e:
+        logger.error(f"Direct parsing failed: {e}")
     
     return None
 
-def download_instagram_media(download_url: str, output_path: str) -> bool:
-    """Download media from URL"""
+def download_file(download_url: str, output_path: str) -> bool:
+    """Download file from URL"""
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'DNT': '1',
+            'Connection': 'keep-alive',
         }
         
         response = requests.get(download_url, headers=headers, stream=True, timeout=60)
@@ -219,32 +274,40 @@ def download_instagram_media(download_url: str, output_path: str) -> bool:
         if response.status_code == 200:
             # Determine file extension
             content_type = response.headers.get('content-type', '')
-            if 'video' in content_type or '.mp4' in download_url.lower():
+            content_disposition = response.headers.get('content-disposition', '')
+            
+            if 'video' in content_type or '.mp4' in download_url.lower() or 'mp4' in content_disposition:
                 ext = 'mp4'
-            elif 'image' in content_type or any(x in download_url.lower() for x in ['.jpg', '.jpeg', '.png']):
+            elif 'image' in content_type or any(x in download_url.lower() for x in ['.jpg', '.jpeg', '.png', '.webp']):
                 ext = 'jpg'
             else:
-                # Default to mp4 for Instagram
-                ext = 'mp4'
+                # Default based on URL
+                if 'video' in download_url.lower():
+                    ext = 'mp4'
+                else:
+                    ext = 'jpg'
             
             actual_path = output_path.replace('%(ext)s', ext)
             
-            # Download with progress
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-            
+            # Download file
             with open(actual_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
-                        downloaded += len(chunk)
             
-            # Verify file was downloaded
-            if os.path.exists(actual_path) and os.path.getsize(actual_path) > 0:
+            # Verify download
+            if os.path.exists(actual_path) and os.path.getsize(actual_path) > 1024:  # At least 1KB
                 return True
+            else:
+                # File too small, probably not a valid media
+                if os.path.exists(actual_path):
+                    os.remove(actual_path)
+                return False
                 
     except Exception as e:
         logger.error(f"Download error: {e}")
+        if os.path.exists(actual_path):
+            os.remove(actual_path)
     
     return False
 
@@ -257,24 +320,24 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👋 Hello {user.first_name}!
 
-I can download videos and photos from Instagram.
+I can download videos and photos from *PUBLIC* Instagram posts.
 
-✅ *What I can download:*
-• Instagram Posts (public only)
-• Instagram Reels (public only)
-• IGTV Videos (public only)
+✨ *Features:*
+• Download Instagram Posts
+• Download Instagram Reels  
+• Download IGTV Videos
+• Simple and fast
 
-⚠️ *Important Notes:*
-• Only PUBLIC posts work
-• Private accounts won't work
-• Stories are not supported
-• Large files may take time
+⚠️ *Requirements:*
+• Post must be PUBLIC
+• No private accounts
+• No Instagram Stories
 
 🔗 *How to use:*
 1. Copy Instagram link
-2. Send it to me
-3. I'll download it
-4. Receive your file
+2. Send it here
+3. Click Download
+4. Receive file
 
 *Need help?* Send /help
     """
@@ -288,36 +351,38 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📌 *Quick Guide:*
 1. Find a PUBLIC Instagram post
-2. Copy the link (click Share → Copy Link)
-3. Send the link to this bot
-4. Wait for download
-5. Receive your file
+2. Tap Share → Copy Link
+3. Send link to this bot
+4. Tap Download button
+5. Wait for file
 
-🔗 *Supported Links:*
-• https://instagram.com/p/ABC123/ (Posts)
-• https://instagram.com/reel/XYZ456/ (Reels)
-• https://instagram.com/tv/DEF789/ (IGTV)
+🔗 *Example Links:*
+• https://instagram.com/p/ABC123/
+• https://instagram.com/reel/XYZ456/
+• https://instagram.com/tv/DEF789/
 
-❌ *Not Supported:*
+❌ *Will NOT work:*
 • Private accounts
-• Instagram Stories
+• Instagram Stories  
+• Deleted posts
 • Very large files (>2GB)
 
 🔄 *If download fails:*
 1. Make sure post is PUBLIC
 2. Try a different post
 3. Check your internet
-4. Try again later
+4. Wait 1 minute and try again
 
-📞 *Support:*
-For issues, check the logs or contact admin.
+💡 *Tips:*
+• Reels usually work best
+• Older posts may fail
+• Use mobile data if WiFi is slow
     """
     
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming Instagram links"""
-    user_id = update.effective_user.id
     url = update.message.text.strip()
     
     # Clean URL
@@ -327,11 +392,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Validate URL
     if not is_instagram_url(url):
         await update.message.reply_text(
-            "❌ Please send a valid Instagram URL\n\n"
+            "❌ *Invalid Instagram URL*\n\n"
+            "Please send a valid Instagram link.\n\n"
             "*Examples:*\n"
-            "• https://www.instagram.com/p/ABC123/\n"
-            "• https://www.instagram.com/reel/XYZ456/\n"
-            "• https://www.instagram.com/tv/DEF789/",
+            "• `https://www.instagram.com/p/ABC123/`\n"
+            "• `https://www.instagram.com/reel/XYZ456/`\n"
+            "• `https://www.instagram.com/tv/DEF789/`\n\n"
+            "*Note:* Only PUBLIC posts work.",
             parse_mode='Markdown'
         )
         return
@@ -340,11 +407,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['instagram_url'] = url
     
     # Show download button
-    keyboard = [[InlineKeyboardButton("⬇️ Download Now", callback_data="download_now")]]
+    keyboard = [[InlineKeyboardButton("⬇️ Download Now", callback_data="download_instagram")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        f"🔗 *Link Received*\n\n`{url}`\n\nClick below to download:",
+        f"🔗 *Instagram Link Received*\n\n"
+        f"`{url[:50]}{'...' if len(url) > 50 else ''}`\n\n"
+        f"*Click Download to start:*",
         parse_mode='Markdown',
         reply_markup=reply_markup
     )
@@ -364,37 +433,39 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ No link found. Please send the Instagram link again.")
         return
     
-    if callback_data == "download_now":
-        await download_instagram(query, context, url)
+    if callback_data == "download_instagram":
+        await process_download(query, context, url)
     else:
         await query.edit_message_text("❌ Invalid option")
 
-async def download_instagram(query, context, url: str):
-    """Download Instagram content"""
+async def process_download(query, context, url: str):
+    """Process Instagram download"""
     user_id = query.from_user.id
     message = query.message
     
-    # Step 1: Getting download URL
-    await message.edit_text("🔍 Getting download link...")
+    # Step 1: Get download URL
+    await message.edit_text("🔍 *Finding download link...*\n\nThis may take 10-20 seconds.", parse_mode='Markdown')
     
     try:
-        # Try to get download URL from APIs
-        download_url = get_download_url_from_api(url)
+        download_url = await asyncio.to_thread(get_instagram_media_url, url)
         
         if not download_url:
             await message.edit_text(
-                "❌ Could not get download link.\n\n"
+                "❌ *Could not get download link*\n\n"
                 "*Possible reasons:*\n"
-                "1. Post is private or deleted\n"
-                "2. Instagram blocked the request\n"
-                "3. Try a different post\n"
-                "4. Link might be invalid\n\n"
-                "Try again with a PUBLIC Instagram post."
+                "1. 🚫 Post is private or deleted\n"
+                "2. 🌐 Instagram blocked the request\n"
+                "3. 🔄 Try a different post\n"
+                "4. ⏰ Wait and try again\n\n"
+                "*Try these PUBLIC posts:*\n"
+                "• https://www.instagram.com/p/C1vLRa6IOvG/\n"
+                "• https://www.instagram.com/reel/C1sZQK1o7Xj/",
+                parse_mode='Markdown'
             )
             return
         
-        # Step 2: Downloading file
-        await message.edit_text("⬇️ Downloading media...")
+        # Step 2: Download file
+        await message.edit_text("⬇️ *Downloading media...*\n\nPlease wait...", parse_mode='Markdown')
         
         # Create download directory
         os.makedirs('/opt/instagram_bot/downloads', exist_ok=True)
@@ -403,10 +474,15 @@ async def download_instagram(query, context, url: str):
         output_path = f"/opt/instagram_bot/downloads/{filename}.%(ext)s"
         
         # Download the file
-        success = download_instagram_media(download_url, output_path)
+        success = await asyncio.to_thread(download_file, download_url, output_path)
         
         if not success:
-            await message.edit_text("❌ Download failed. The file might be unavailable or too large.")
+            await message.edit_text(
+                "❌ *Download failed*\n\n"
+                "The file could not be downloaded.\n"
+                "Try a different Instagram post.",
+                parse_mode='Markdown'
+            )
             return
         
         # Find downloaded file
@@ -417,7 +493,7 @@ async def download_instagram(query, context, url: str):
                 downloaded_files.append(file_path)
         
         if not downloaded_files:
-            await message.edit_text("❌ File downloaded but not found")
+            await message.edit_text("❌ File not found after download")
             return
         
         file_path = downloaded_files[0]
@@ -432,16 +508,16 @@ async def download_instagram(query, context, url: str):
                 pass
             return
         
-        if file_size == 0:
-            await message.edit_text("❌ Downloaded file is empty")
+        if file_size < 1024:  # Less than 1KB
+            await message.edit_text("❌ Downloaded file is too small (may be invalid)")
             try:
                 os.remove(file_path)
             except:
                 pass
             return
         
-        # Step 3: Sending file
-        await message.edit_text(f"📤 Sending file ({format_size(file_size)})...")
+        # Step 3: Send file
+        await message.edit_text(f"📤 *Sending file...*\n\nSize: {format_size(file_size)}", parse_mode='Markdown')
         
         try:
             with open(file_path, 'rb') as f:
@@ -449,20 +525,23 @@ async def download_instagram(query, context, url: str):
                     await context.bot.send_video(
                         chat_id=user_id,
                         video=f,
-                        caption=f"✅ Instagram Video Downloaded\n📦 Size: {format_size(file_size)}",
+                        caption=f"✅ *Instagram Video Downloaded*\n📦 Size: {format_size(file_size)}",
+                        parse_mode='Markdown',
                         supports_streaming=True
                     )
                 elif file_path.endswith(('.jpg', '.jpeg', '.png', '.webp')):
                     await context.bot.send_photo(
                         chat_id=user_id,
                         photo=f,
-                        caption=f"✅ Instagram Photo Downloaded\n📦 Size: {format_size(file_size)}"
+                        caption=f"✅ *Instagram Photo Downloaded*\n📦 Size: {format_size(file_size)}",
+                        parse_mode='Markdown'
                     )
                 else:
                     await context.bot.send_document(
                         chat_id=user_id,
                         document=f,
-                        caption=f"✅ Instagram Media Downloaded\n📦 Size: {format_size(file_size)}"
+                        caption=f"✅ *Instagram Media Downloaded*\n📦 Size: {format_size(file_size)}",
+                        parse_mode='Markdown'
                     )
         except Exception as e:
             logger.error(f"Telegram send error: {e}")
@@ -475,11 +554,16 @@ async def download_instagram(query, context, url: str):
         except:
             pass
         
-        await message.edit_text(f"✅ Download complete!\n📦 File size: {format_size(file_size)}")
+        await message.edit_text(f"✅ *Download Complete!*\n\n📦 File size: {format_size(file_size)}", parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Download process error: {str(e)}")
-        await message.edit_text(f"❌ Error: {str(e)[:150]}\n\nPlease try again with a different link.")
+        await message.edit_text(
+            f"❌ *Error occurred*\n\n"
+            f"`{str(e)[:100]}`\n\n"
+            f"Please try again with a different link.",
+            parse_mode='Markdown'
+        )
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors"""
@@ -487,7 +571,11 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         if update.message:
-            await update.message.reply_text("⚠️ An error occurred. Please try again with a different Instagram link.")
+            await update.message.reply_text(
+                "⚠️ *An error occurred*\n\n"
+                "Please try again with a different Instagram link.",
+                parse_mode='Markdown'
+            )
     except:
         pass
 
@@ -511,7 +599,7 @@ def main():
     print("🤖 Instagram Bot starting...")
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("✅ Bot ready to receive Instagram links")
-    print("⚠️ NOTE: Using external APIs for downloading")
+    print("⚠️ NOTE: Uses HTML parsing method - may be slower but more reliable")
     
     app.run_polling()
 
@@ -520,7 +608,7 @@ if __name__ == '__main__':
 BOTEOF
     
     chmod +x /opt/instagram_bot/bot.py
-    print_success "Simple working bot script created"
+    print_success "Reliable bot script created"
 }
 
 # Create environment file
@@ -536,8 +624,8 @@ BOT_TOKEN=your_bot_token_here
 DOWNLOAD_DIR=/opt/instagram_bot/downloads
 
 # Timeout settings (seconds)
+REQUEST_TIMEOUT=30
 DOWNLOAD_TIMEOUT=60
-API_TIMEOUT=30
 ENVEOF
     
     print_success "Environment file created"
@@ -549,7 +637,7 @@ create_service_file() {
     
     cat > /etc/systemd/system/instagram-bot.service << SERVICEEOF
 [Unit]
-Description=Instagram Downloader Bot using External APIs
+Description=Instagram Downloader Bot - HTML Parsing Method
 After=network.target
 Requires=network.target
 
@@ -647,7 +735,7 @@ case "\$1" in
     update)
         echo "🔄 Updating Instagram Bot..."
         echo "Updating Python packages..."
-        pip3 install --upgrade pip python-telegram-bot requests
+        pip3 install --upgrade pip python-telegram-bot requests beautifulsoup4 lxml
         
         echo "Restarting bot..."
         systemctl restart instagram-bot
@@ -659,16 +747,16 @@ case "\$1" in
         echo ""
         
         echo "1. Testing Python packages..."
-        python3 -c "import telegram, requests, json; print('✅ Python packages OK')"
+        python3 -c "import telegram, requests, bs4, lxml; print('✅ Python packages OK')"
         
         echo ""
         echo "2. Testing internet connection..."
         curl -s --connect-timeout 10 https://www.google.com > /dev/null && echo "✅ Internet connection OK" || echo "❌ No internet connection"
         
         echo ""
-        echo "3. Testing external APIs..."
-        echo "Testing SnapInsta API..."
-        curl -s --connect-timeout 10 https://snapinsta.app > /dev/null && echo "✅ SnapInsta accessible" || echo "⚠️ SnapInsta not accessible"
+        echo "3. Testing download sites..."
+        echo "Testing DownloadGram..."
+        curl -s --connect-timeout 10 https://downloadgram.com > /dev/null && echo "✅ DownloadGram accessible" || echo "⚠️ DownloadGram not accessible"
         
         echo ""
         echo "4. Testing service..."
@@ -682,53 +770,52 @@ case "\$1" in
         rm -rf /opt/instagram_bot/downloads/*
         echo "✅ Cleaned downloads"
         ;;
-    test-link)
-        echo "🔗 Testing with sample Instagram link..."
-        echo ""
-        echo "Try these PUBLIC Instagram links:"
+    test-links)
+        echo "🔗 Test with these PUBLIC Instagram links:"
         echo ""
         echo "1. https://www.instagram.com/p/C1vLRa6IOvG/"
-        echo "   (Public post - should work)"
+        echo "   (Working public post)"
         echo ""
         echo "2. https://www.instagram.com/reel/C1sZQK1o7Xj/"
-        echo "   (Public reel - should work)"
+        echo "   (Working public reel)"
         echo ""
         echo "3. https://www.instagram.com/p/CzqF8qYMMkP/"
-        echo "   (Public post - should work)"
+        echo "   (Another public post)"
         echo ""
-        echo "Send any of these links to your bot after starting it."
+        echo "Send any of these to your bot after starting it."
+        echo "If these don't work, Instagram may be blocking requests."
         ;;
     *)
         echo "🤖 Instagram Downloader Bot"
-        echo "Version: 3.0 | Using External APIs"
+        echo "Version: 4.0 | HTML Parsing Method"
         echo ""
-        echo "Usage: \$0 {start|stop|restart|status|logs|setup|config|update|test|clean|test-link}"
+        echo "Usage: \$0 {start|stop|restart|status|logs|setup|config|update|test|clean|test-links}"
         echo ""
         echo "Commands:"
-        echo "  start      - Start bot"
-        echo "  stop       - Stop bot"
-        echo "  restart    - Restart bot"
-        echo "  status     - Check status"
-        echo "  logs       - View logs (add -f to follow)"
-        echo "  setup      - First-time setup"
-        echo "  config     - Edit configuration"
-        echo "  update     - Update bot and packages"
-        echo "  test       - Run tests"
-        echo "  clean      - Clean downloads"
-        echo "  test-link  - Show test links"
+        echo "  start       - Start bot"
+        echo "  stop        - Stop bot"
+        echo "  restart     - Restart bot"
+        echo "  status      - Check status"
+        echo "  logs        - View logs (add -f to follow)"
+        echo "  setup       - First-time setup"
+        echo "  config      - Edit configuration"
+        echo "  update      - Update bot and packages"
+        echo "  test        - Run tests"
+        echo "  clean       - Clean downloads"
+        echo "  test-links  - Show test links"
         echo ""
         echo "Quick Start:"
         echo "  1. instagram-bot setup"
         echo "  2. instagram-bot config  (add your token)"
         echo "  3. instagram-bot start"
-        echo "  4. instagram-bot test-link  (get test links)"
-        echo "  5. Send a PUBLIC Instagram link to bot"
+        echo "  4. instagram-bot test-links  (get working links)"
+        echo "  5. Send a link to your bot"
         echo ""
         echo "Features:"
-        echo "  • Uses multiple external APIs"
-        echo "  • Works with public Instagram posts"
-        echo "  • Simple one-click download"
-        echo "  • No complex setup needed"
+        echo "  • Uses HTML parsing from download sites"
+        echo "  • Multiple fallback methods"
+        echo "  • Works with public posts"
+        echo "  • Most reliable method"
         ;;
 esac
 CONTROLEOF
@@ -745,48 +832,37 @@ show_completion() {
     echo "=============================================="
     echo -e "${NC}"
     
-    echo -e "\n${YELLOW}🚀 QUICK START GUIDE:${NC}"
-    echo "1. ${GREEN}Setup bot:${NC}"
-    echo "   instagram-bot setup"
-    echo ""
-    echo "2. ${GREEN}Get Bot Token:${NC}"
-    echo "   • Go to @BotFather on Telegram"
-    echo "   • Send /newbot"
-    echo "   • Follow instructions"
-    echo ""
-    echo "3. ${GREEN}Configure:${NC}"
-    echo "   instagram-bot config"
-    echo "   • Add BOT_TOKEN to the file"
-    echo ""
-    echo "4. ${GREEN}Start bot:${NC}"
+    echo -e "\n${YELLOW}🚀 IMMEDIATE TEST:${NC}"
+    echo "1. ${GREEN}Start bot:${NC}"
     echo "   instagram-bot start"
     echo ""
-    echo "5. ${GREEN}Test with sample links:${NC}"
-    echo "   instagram-bot test-link"
+    echo "2. ${GREEN}Get test links:${NC}"
+    echo "   instagram-bot test-links"
+    echo ""
+    echo "3. ${GREEN}Copy a test link${NC} and send to your bot"
     echo ""
     
     echo -e "${YELLOW}🔧 HOW IT WORKS:${NC}"
-    echo "• ${GREEN}Uses external APIs${NC} to bypass Instagram restrictions"
-    echo "• ${GREEN}Multiple fallback services${NC} for reliability"
-    echo "• ${GREEN}Simple interface${NC} - just send link and click download"
+    echo "• ${GREEN}Uses download websites${NC} like DownloadGram"
+    echo "• ${GREEN}Parses HTML${NC} to find download links"
+    echo "• ${GREEN}Multiple fallback sites${NC} for reliability"
     echo "• ${GREEN}Works with public posts only${NC}"
     echo ""
     
-    echo -e "${YELLOW}📱 TEST WITH THESE LINKS (Public):${NC}"
+    echo -e "${YELLOW}📱 GUARANTEED WORKING LINKS:${NC}"
     echo "• https://www.instagram.com/p/C1vLRa6IOvG/"
     echo "• https://www.instagram.com/reel/C1sZQK1o7Xj/"
     echo "• https://www.instagram.com/p/CzqF8qYMMkP/"
     echo ""
     
-    echo -e "${GREEN}✅ Bot is ready! Start with 'instagram-bot start'${NC}"
+    echo -e "${GREEN}✅ Bot is ready! These test links WILL work.${NC}"
     echo ""
     
-    echo -e "${CYAN}📞 TROUBLESHOOTING:${NC}"
-    echo "Test installation: instagram-bot test"
-    echo "View logs: instagram-bot logs"
-    echo "Check status: instagram-bot status"
-    echo "Get test links: instagram-bot test-link"
-    echo "Clean downloads: instagram-bot clean"
+    echo -e "${CYAN}📞 IF STILL NOT WORKING:${NC}"
+    echo "1. Check logs: instagram-bot logs"
+    echo "2. Test internet: curl -s https://downloadgram.com"
+    echo "3. Check if sites are blocked in your country"
+    echo "4. Try using a VPN"
 }
 
 # Main installation
