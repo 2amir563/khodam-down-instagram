@@ -17,7 +17,7 @@ markdown
 ## 🚀 نصب سریع
 
 ### روش ۱: نصب مستقیم
-```bash
+bash
 
 ```
 bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-instagram/main/install.sh)
