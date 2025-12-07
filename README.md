@@ -1,3 +1,11 @@
+
+
+```
+bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-instagram/main/install.sh)
+```
+
+
+
 markdown
 # Instagram Downloader Bot for Telegram
 
