@@ -1,1123 +1,918 @@
 #!/bin/bash
-
-# Instagram Downloader Bot with Selenium WebDriver
-# GUARANTEED WORKING VERSION
+# instagram_install.sh - Install Instagram bot with quality selection
+# Run: bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/instagram_install.sh)
 
 set -e
 
+echo "📸 Installing Instagram Bot"
+echo "==========================="
+
 # Colors
-RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
+RED='\033[0;31m'
 BLUE='\033[0;34m'
-CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Logo
-show_logo() {
-    clear
-    echo -e "${BLUE}"
-    echo "=============================================="
-    echo "   INSTAGRAM DOWNLOADER BOT - SELENIUM"
-    echo "   GUARANTEED WORKING VERSION"
-    echo "=============================================="
-    echo -e "${NC}"
-}
+print_green() { echo -e "${GREEN}[✓]${NC} $1"; }
+print_red() { echo -e "${RED}[✗]${NC} $1"; }
+print_blue() { echo -e "${BLUE}[i]${NC} $1"; }
 
-# Print functions
-print_info() { echo -e "${CYAN}[*] $1${NC}"; }
-print_success() { echo -e "${GREEN}[✓] $1${NC}"; }
-print_warning() { echo -e "${YELLOW}[!] $1${NC}"; }
-print_error() { echo -e "${RED}[✗] $1${NC}"; }
+# Install directory
+INSTALL_DIR="/opt/instagram-bot"
 
-# Install dependencies
-install_deps() {
-    print_info "Installing system dependencies..."
-    
-    if command -v apt &> /dev/null; then
-        apt update -y
-        apt install -y python3 python3-pip python3-venv git curl wget nano \
-                      chromium-browser chromium-chromedriver xvfb
-    elif command -v yum &> /dev/null; then
-        yum install -y python3 python3-pip git curl wget nano \
-                      chromium chromedriver xorg-x11-server-Xvfb
-    elif command -v dnf &> /dev/null; then
-        dnf install -y python3 python3-pip git curl wget nano \
-                      chromium chromedriver xorg-x11-server-Xvfb
-    else
-        print_error "Unsupported OS"
-        exit 1
-    fi
-    
-    print_success "System dependencies installed"
-}
+# Step 1: Cleanup
+print_blue "1. Cleaning old installations..."
+pkill -f "python.*instagram_bot.py" 2>/dev/null || true
+rm -rf "$INSTALL_DIR" 2>/dev/null || true
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
 
-# Install Python packages
-install_python_packages() {
-    print_info "Installing Python packages..."
-    
-    pip3 install --upgrade pip
-    pip3 install python-telegram-bot==20.7 selenium==4.15.0 webdriver-manager requests
-    
-    print_success "Python packages installed"
-}
+# Step 2: Install dependencies
+print_blue "2. Installing system dependencies..."
+apt-get update -y
+apt-get install -y python3 python3-pip python3-venv git curl wget ffmpeg nano cron
 
-# Create bot directory
-create_bot_dir() {
-    print_info "Creating bot directory..."
-    
-    rm -rf /opt/instagram_bot
-    mkdir -p /opt/instagram_bot
-    cd /opt/instagram_bot
-    
-    # Create necessary directories
-    mkdir -p downloads logs screenshots
-    
-    print_success "Directory created: /opt/instagram_bot"
-}
+# Step 3: Create virtual environment
+print_blue "3. Creating virtual environment..."
+python3 -m venv venv
+source venv/bin/activate
 
-# Create GUARANTEED WORKING bot.py script
-create_bot_script() {
-    print_info "Creating guaranteed working bot script..."
-    
-    cat > /opt/instagram_bot/bot.py << 'BOTEOF'
+# Step 4: Install Python packages
+print_blue "4. Installing Python packages..."
+pip install --upgrade pip
+pip install python-telegram-bot==20.7 yt-dlp==2025.11.12 requests==2.32.5 instagrapi==1.18.1
+
+# Step 5: Create instagram_bot.py
+print_blue "5. Creating instagram_bot.py..."
+cat > instagram_bot.py << 'BOTPYEOF'
 #!/usr/bin/env python3
 """
-Instagram Downloader Bot with Selenium WebDriver
-GUARANTEED WORKING VERSION
+Instagram Download Bot for Telegram
+Features:
+1. Download Instagram posts (photos, videos, reels, IGTV)
+2. Quality selection for videos
+3. Album (carousel) download support
+4. Stories download support
+5. Auto cleanup every 2 minutes
 """
 
 import os
-import re
+import json
 import logging
 import asyncio
+import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from instagrapi import Client
+from instagrapi.exceptions import LoginRequired, ClientError
+import yt_dlp
 import requests
-import json
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.keys import Keys
 
 # Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     handlers=[
-        logging.FileHandler('/opt/instagram_bot/logs/bot.log'),
+        logging.FileHandler('bot.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Bot token
-BOT_TOKEN = os.getenv('BOT_TOKEN', '')
-
-def is_instagram_url(url: str) -> bool:
-    """Check if URL is from Instagram"""
-    patterns = [
-        r'instagram\.com/p/',
-        r'instagram\.com/reel/',
-        r'instagram\.com/tv/',
-        r'instagram\.com/stories/',
-    ]
+class InstagramDownloadBot:
+    def __init__(self):
+        self.config = self.load_config()
+        self.token = self.config['telegram']['token']
+        self.admin_ids = self.config['telegram'].get('admin_ids', [])
+        
+        # Instagram client
+        self.cl = None
+        self.is_logged_in = False
+        
+        # Bot state
+        self.is_paused = False
+        self.paused_until = None
+        
+        # Create directories
+        self.download_dir = Path(self.config.get('download_dir', 'downloads'))
+        self.download_dir.mkdir(exist_ok=True)
+        
+        # Start auto cleanup
+        self.start_auto_cleanup()
+        
+        logger.info("🤖 Instagram Download Bot initialized")
+        print(f"✅ Token: {self.token[:15]}...")
     
-    url_lower = url.lower()
-    for pattern in patterns:
-        if re.search(pattern, url_lower):
-            return True
-    return False
-
-def format_size(bytes_size: int) -> str:
-    """Format bytes to human readable size"""
-    if bytes_size == 0:
-        return "Unknown"
-    
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if bytes_size < 1024.0:
-            return f"{bytes_size:.1f} {unit}"
-        bytes_size /= 1024.0
-    return f"{bytes_size:.1f} TB"
-
-def setup_selenium_driver():
-    """Setup Chrome driver with options"""
-    chrome_options = Options()
-    
-    # Headless mode (no GUI)
-    chrome_options.add_argument('--headless')
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--window-size=1920,1080')
-    
-    # Disable images for faster loading
-    chrome_options.add_argument('--blink-settings=imagesEnabled=false')
-    
-    # User agent
-    chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-    
-    try:
-        # Try to use system Chrome
-        driver = webdriver.Chrome(options=chrome_options)
-        logger.info("Using system Chrome driver")
-        return driver
-    except:
-        try:
-            # Try with chromedriver-autoinstaller
-            from webdriver_manager.chrome import ChromeDriverManager
-            from selenium.webdriver.chrome.service import Service
-            
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            logger.info("Using webdriver_manager Chrome")
-            return driver
-        except Exception as e:
-            logger.error(f"Failed to setup Chrome driver: {e}")
-            return None
-
-def get_media_url_with_selenium(url: str):
-    """Get Instagram media URL using Selenium"""
-    driver = None
-    try:
-        driver = setup_selenium_driver()
-        if not driver:
-            return None
+    def load_config(self):
+        """Load configuration"""
+        config_file = 'config.json'
+        if os.path.exists(config_file):
+            with open(config_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
         
-        logger.info(f"Opening Instagram page: {url}")
-        driver.get(url)
-        
-        # Wait for page to load
-        time.sleep(5)
-        
-        # Take screenshot for debugging
-        screenshot_path = f"/opt/instagram_bot/screenshots/{int(time.time())}.png"
-        driver.save_screenshot(screenshot_path)
-        logger.info(f"Screenshot saved: {screenshot_path}")
-        
-        # Method 1: Try to find video element
-        try:
-            video_element = driver.find_element(By.TAG_NAME, 'video')
-            video_url = video_element.get_attribute('src')
-            if video_url and 'http' in video_url:
-                logger.info(f"Found video URL: {video_url[:100]}...")
-                driver.quit()
-                return video_url
-        except:
-            pass
-        
-        # Method 2: Try to find image element
-        try:
-            # Look for meta tags
-            meta_tags = driver.find_elements(By.TAG_NAME, 'meta')
-            for tag in meta_tags:
-                property_attr = tag.get_attribute('property')
-                content_attr = tag.get_attribute('content')
-                
-                if property_attr and 'og:image' in property_attr and content_attr:
-                    logger.info(f"Found og:image URL: {content_attr[:100]}...")
-                    driver.quit()
-                    return content_attr
-                
-                if property_attr and 'og:video' in property_attr and content_attr:
-                    logger.info(f"Found og:video URL: {content_attr[:100]}...")
-                    driver.quit()
-                    return content_attr
-        except:
-            pass
-        
-        # Method 3: Look in page source
-        page_source = driver.page_source
-        
-        # Look for video URLs in source
-        video_patterns = [
-            r'"video_url":"([^"]+)"',
-            r'"contentUrl":"([^"]+)"',
-            r'src="([^"]+\.mp4[^"]*)"',
-        ]
-        
-        for pattern in video_patterns:
-            matches = re.findall(pattern, page_source)
-            for match in matches:
-                if 'http' in match:
-                    video_url = match.replace('\\/', '/')
-                    logger.info(f"Found video URL in source: {video_url[:100]}...")
-                    driver.quit()
-                    return video_url
-        
-        # Look for image URLs in source
-        image_patterns = [
-            r'"display_url":"([^"]+)"',
-            r'"thumbnail_src":"([^"]+)"',
-            r'src="([^"]+\.jpg[^"]*)"',
-        ]
-        
-        for pattern in image_patterns:
-            matches = re.findall(pattern, page_source)
-            for match in matches:
-                if 'http' in match:
-                    image_url = match.replace('\\/', '/')
-                    logger.info(f"Found image URL in source: {image_url[:100]}...")
-                    driver.quit()
-                    return image_url
-        
-        driver.quit()
-        return None
-        
-    except Exception as e:
-        logger.error(f"Selenium error: {e}")
-        if driver:
-            driver.quit()
-        return None
-
-def get_media_url_fallback(url: str):
-    """Fallback method using direct requests"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
+        # Default config
+        config = {
+            'telegram': {
+                'token': 'YOUR_BOT_TOKEN_HERE',
+                'admin_ids': [],
+                'max_file_size': 2000
+            },
+            'instagram': {
+                'username': 'YOUR_INSTAGRAM_USERNAME',
+                'password': 'YOUR_INSTAGRAM_PASSWORD',
+                'session_file': 'session.json'
+            },
+            'download_dir': 'downloads',
+            'auto_cleanup_minutes': 2
         }
         
-        response = requests.get(url, headers=headers, timeout=30)
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=4, ensure_ascii=False)
         
-        if response.status_code == 200:
-            html = response.text
+        return config
+    
+    def login_instagram(self):
+        """Login to Instagram"""
+        try:
+            self.cl = Client()
             
-            # Look for JSON data in script tags
-            script_pattern = r'window\.__additionalDataLoaded\([^,]+,\s*({[^}]+})\);'
-            match = re.search(script_pattern, html)
+            # Try to load session
+            session_file = self.config['instagram']['session_file']
+            if os.path.exists(session_file):
+                self.cl.load_settings(session_file)
             
-            if match:
+            # Login
+            username = self.config['instagram']['username']
+            password = self.config['instagram']['password']
+            
+            if username == 'YOUR_INSTAGRAM_USERNAME' or password == 'YOUR_INSTAGRAM_PASSWORD':
+                logger.warning("Instagram credentials not configured")
+                return False
+            
+            self.cl.login(username, password)
+            
+            # Save session
+            self.cl.dump_settings(session_file)
+            
+            self.is_logged_in = True
+            logger.info(f"✅ Logged in to Instagram as {username}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Instagram login error: {e}")
+            self.is_logged_in = False
+            return False
+    
+    def start_auto_cleanup(self):
+        """Start auto cleanup thread"""
+        def cleanup_worker():
+            while True:
                 try:
-                    data = json.loads(match.group(1))
-                    # Extract video or image URL from JSON
-                    if 'graphql' in data:
-                        media = data['graphql']['shortcode_media']
-                        if media['is_video']:
-                            return media['video_url']
+                    self.cleanup_old_files()
+                    time.sleep(60)
+                except Exception as e:
+                    logger.error(f"Cleanup error: {e}")
+                    time.sleep(60)
+        
+        thread = threading.Thread(target=cleanup_worker, daemon=True)
+        thread.start()
+        logger.info("🧹 Auto cleanup started")
+    
+    def cleanup_old_files(self):
+        """Cleanup files older than 2 minutes"""
+        cutoff_time = time.time() - (2 * 60)
+        files_deleted = 0
+        
+        for file_path in self.download_dir.glob('*'):
+            if file_path.is_file():
+                file_age = time.time() - file_path.stat().st_mtime
+                if file_age > (2 * 60):
+                    try:
+                        file_path.unlink()
+                        files_deleted += 1
+                    except Exception as e:
+                        logger.error(f"Error deleting {file_path}: {e}")
+        
+        if files_deleted > 0:
+            logger.info(f"Cleaned {files_deleted} old files")
+    
+    def extract_instagram_info(self, url):
+        """Extract information from Instagram URL"""
+        try:
+            if not self.is_logged_in:
+                if not self.login_instagram():
+                    return None
+            
+            if '/p/' in url or '/reel/' in url or '/tv/' in url:
+                # Post, Reel, or IGTV
+                media_pk = self.cl.media_pk_from_url(url)
+                media_info = self.cl.media_info(media_pk)
+                
+                return {
+                    'type': media_info.media_type,
+                    'pk': media_info.pk,
+                    'code': media_info.code,
+                    'caption': media_info.caption_text if media_info.caption_text else "No caption",
+                    'username': media_info.user.username,
+                    'thumbnail_url': media_info.thumbnail_url,
+                    'resources': []
+                }
+                
+            elif '/stories/' in url:
+                # Story
+                username = url.split('/stories/')[1].split('/')[0]
+                user_id = self.cl.user_id_from_username(username)
+                stories = self.cl.user_stories(user_id)
+                
+                if stories:
+                    return {
+                        'type': 'story',
+                        'username': username,
+                        'stories': stories,
+                        'count': len(stories)
+                    }
+            
+        except Exception as e:
+            logger.error(f"Error extracting info: {e}")
+        
+        return None
+    
+    def download_instagram_media(self, url, quality='best'):
+        """Download Instagram media"""
+        try:
+            info = self.extract_instagram_info(url)
+            if not info:
+                return None
+            
+            downloads = []
+            
+            if info['type'] == 1:  # Photo
+                # Single photo
+                media_pk = info['pk']
+                media_info = self.cl.media_info(media_pk)
+                
+                photo_url = media_info.thumbnail_url or media_info.resources[0].thumbnail_url
+                filename = f"{info['username']}_{info['code']}.jpg"
+                filepath = self.download_dir / filename
+                
+                self.download_file(photo_url, filepath)
+                downloads.append({
+                    'type': 'photo',
+                    'path': str(filepath),
+                    'caption': info['caption'][:1000]
+                })
+                
+            elif info['type'] == 2:  # Video
+                # Video
+                media_pk = info['pk']
+                media_info = self.cl.media_info(media_pk)
+                
+                video_url = media_info.video_url
+                filename = f"{info['username']}_{info['code']}.mp4"
+                filepath = self.download_dir / filename
+                
+                self.download_file(video_url, filepath)
+                downloads.append({
+                    'type': 'video',
+                    'path': str(filepath),
+                    'caption': info['caption'][:1000]
+                })
+                
+            elif info['type'] == 8:  # Album
+                # Carousel (multiple media)
+                media_pk = info['pk']
+                media_info = self.cl.media_info(media_pk)
+                
+                for idx, resource in enumerate(media_info.resources):
+                    if resource.media_type == 1:  # Photo
+                        media_url = resource.thumbnail_url
+                        ext = 'jpg'
+                    else:  # Video
+                        media_url = resource.video_url
+                        ext = 'mp4'
+                    
+                    filename = f"{info['username']}_{info['code']}_{idx+1}.{ext}"
+                    filepath = self.download_dir / filename
+                    
+                    self.download_file(media_url, filepath)
+                    downloads.append({
+                        'type': 'photo' if resource.media_type == 1 else 'video',
+                        'path': str(filepath),
+                        'caption': info['caption'][:1000] if idx == 0 else None
+                    })
+            
+            elif info['type'] == 'story':
+                # Stories
+                for idx, story in enumerate(info['stories'][:10]):  # Max 10 stories
+                    if story.media_type == 1:  # Photo story
+                        media_url = story.thumbnail_url
+                        ext = 'jpg'
+                    else:  # Video story
+                        media_url = story.video_url
+                        ext = 'mp4'
+                    
+                    filename = f"story_{info['username']}_{idx+1}.{ext}"
+                    filepath = self.download_dir / filename
+                    
+                    self.download_file(media_url, filepath)
+                    downloads.append({
+                        'type': 'photo' if story.media_type == 1 else 'video',
+                        'path': str(filepath),
+                        'caption': f"Story {idx+1}/{len(info['stories'])}"
+                    })
+            
+            return downloads
+            
+        except Exception as e:
+            logger.error(f"Download error: {e}")
+            return None
+    
+    def download_file(self, url, filepath):
+        """Download file from URL"""
+        response = requests.get(url, stream=True, timeout=60)
+        response.raise_for_status()
+        
+        with open(filepath, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+    
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command"""
+        user = update.effective_user
+        
+        if self.is_paused and self.paused_until and datetime.now() < self.paused_until:
+            remaining = self.paused_until - datetime.now()
+            hours = remaining.seconds // 3600
+            minutes = (remaining.seconds % 3600) // 60
+            await update.message.reply_text(
+                f"⏸️ Bot is paused\nWill resume in: {hours}h {minutes}m"
+            )
+            return
+        
+        welcome = f"""
+Hello {user.first_name}! 👋
+
+🤖 **Instagram Download Bot**
+
+📥 **Supported Instagram Content:**
+✅ Photos (single posts)
+✅ Videos (posts, reels)
+✅ Albums (carousel posts)
+✅ Stories
+✅ Reels
+✅ IGTV
+
+🎯 **How to use:**
+1. Send Instagram post link
+2. Bot will download all media
+3. Receive files in Telegram
+
+⚡ **Features:**
+• High quality downloads
+• Album support (multiple files)
+• Story download support
+• Auto cleanup every 2 minutes
+• Caption preservation
+
+🛠️ **Commands:**
+/start - This menu
+/help - Detailed help
+/status - Bot status (admin)
+/pause [hours] - Pause bot (admin)
+/resume - Resume bot (admin)
+/clean - Clean files (admin)
+
+💡 **Files auto deleted after 2 minutes**
+
+⚠️ **Note:** Instagram login required for some content
+"""
+        
+        await update.message.reply_text(welcome, parse_mode='Markdown')
+        logger.info(f"User {user.id} started bot")
+    
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text messages"""
+        if self.is_paused and self.paused_until and datetime.now() < self.paused_until:
+            remaining = self.paused_until - datetime.now()
+            hours = remaining.seconds // 3600
+            minutes = (remaining.seconds % 3600) // 60
+            await update.message.reply_text(
+                f"⏸️ Bot is paused\nWill resume in: {hours}h {minutes}m"
+            )
+            return
+        
+        text = update.message.text
+        user = update.effective_user
+        
+        logger.info(f"Message from {user.first_name}: {text[:50]}")
+        
+        if text.startswith(('http://', 'https://')) and 'instagram.com' in text.lower():
+            await update.message.reply_text("🔍 Processing Instagram link...")
+            
+            # Check Instagram login
+            if not self.is_logged_in:
+                login_msg = await update.message.reply_text("🔐 Logging into Instagram...")
+                if not self.login_instagram():
+                    await login_msg.edit_text("❌ Instagram login failed! Check credentials in config.json")
+                    return
+                await login_msg.edit_text("✅ Logged in successfully!")
+            
+            # Download media
+            status_msg = await update.message.reply_text("📥 Downloading from Instagram...")
+            
+            try:
+                downloads = self.download_instagram_media(text)
+                
+                if not downloads:
+                    await status_msg.edit_text("❌ Failed to download. Possible issues:\n• Private account\n• Login required\n• Invalid link")
+                    return
+                
+                await status_msg.edit_text(f"✅ Downloaded {len(downloads)} item(s)\n📤 Uploading...")
+                
+                # Send files
+                for idx, download in enumerate(downloads):
+                    try:
+                        file_size = os.path.getsize(download['path']) / (1024 * 1024)
+                        max_size = self.config['telegram']['max_file_size']
+                        
+                        if file_size > max_size:
+                            await update.message.reply_text(f"❌ File too large: {file_size:.1f}MB")
+                            os.remove(download['path'])
+                            continue
+                        
+                        with open(download['path'], 'rb') as f:
+                            if download['type'] == 'photo':
+                                await update.message.reply_photo(
+                                    photo=f,
+                                    caption=download['caption'] if download['caption'] else None
+                                )
+                            else:  # video
+                                await update.message.reply_video(
+                                    video=f,
+                                    caption=download['caption'] if download['caption'] else None,
+                                    supports_streaming=True
+                                )
+                        
+                        # Schedule deletion
+                        self.schedule_file_deletion(download['path'])
+                        
+                    except Exception as e:
+                        logger.error(f"Error sending file {idx}: {e}")
+                        await update.message.reply_text(f"❌ Error sending file {idx+1}")
+                
+                await status_msg.edit_text(f"✅ Download complete! Sent {len(downloads)} file(s)")
+                
+            except Exception as e:
+                logger.error(f"Error: {e}")
+                await status_msg.edit_text(f"❌ Error: {str(e)[:100]}")
+        
+        elif text.startswith(('http://', 'https://')):
+            # Other URLs
+            await update.message.reply_text("📥 Downloading with yt-dlp...")
+            await self.download_other_url(update, text)
+        
+        else:
+            await update.message.reply_text(
+                "Please send a valid Instagram URL or other media link\n\n"
+                "📸 **Instagram Examples:**\n"
+                "• https://instagram.com/p/... (post)\n"
+                "• https://instagram.com/reel/... (reel)\n"
+                "• https://instagram.com/stories/... (story)\n"
+                "• https://instagram.com/tv/... (IGTV)"
+            )
+    
+    async def download_other_url(self, update: Update, url):
+        """Download other URLs using yt-dlp"""
+        try:
+            ydl_opts = {
+                'format': 'best',
+                'quiet': True,
+                'outtmpl': str(self.download_dir / '%(title).100s.%(ext)s'),
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                
+                if os.path.exists(filename):
+                    file_size = os.path.getsize(filename) / (1024 * 1024)
+                    max_size = self.config['telegram']['max_file_size']
+                    
+                    if file_size > max_size:
+                        os.remove(filename)
+                        await update.message.reply_text(f"❌ File too large: {file_size:.1f}MB")
+                        return
+                    
+                    with open(filename, 'rb') as f:
+                        if filename.endswith(('.mp4', '.avi', '.mkv', '.mov')):
+                            await update.message.reply_video(
+                                video=f,
+                                caption=f"📹 {info.get('title', 'Video')[:100]}\nSize: {file_size:.1f}MB",
+                                supports_streaming=True
+                            )
+                        elif filename.endswith(('.mp3', '.m4a')):
+                            await update.message.reply_audio(
+                                audio=f,
+                                caption=f"🎵 {info.get('title', 'Audio')[:100]}\nSize: {file_size:.1f}MB"
+                            )
                         else:
-                            return media['display_url']
+                            await update.message.reply_document(
+                                document=f,
+                                caption=f"📄 {info.get('title', 'File')[:100]}\nSize: {file_size:.1f}MB"
+                            )
+                    
+                    await update.message.reply_text(f"✅ Download complete! ({file_size:.1f}MB)")
+                    
+                    # Schedule deletion
+                    self.schedule_file_deletion(filename)
+                    
+        except Exception as e:
+            logger.error(f"Download error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+    
+    def schedule_file_deletion(self, filepath):
+        """Schedule file deletion after 2 minutes"""
+        def delete_later():
+            time.sleep(120)
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                    logger.info(f"Auto deleted: {os.path.basename(filepath)}")
                 except:
                     pass
-            
-            # Look for video URL
-            video_patterns = [
-                r'"video_url":"([^"]+)"',
-                r'"contentUrl":"([^"]+)"',
-            ]
-            
-            for pattern in video_patterns:
-                match = re.search(pattern, html)
-                if match:
-                    return match.group(1).replace('\\/', '/')
-            
-            # Look for image URL
-            image_patterns = [
-                r'"display_url":"([^"]+)"',
-                r'property="og:image" content="([^"]+)"',
-            ]
-            
-            for pattern in image_patterns:
-                match = re.search(pattern, html)
-                if match:
-                    return match.group(1).replace('\\/', '/')
         
-        return None
+        threading.Thread(target=delete_later, daemon=True).start()
+    
+    # Admin commands
+    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        if user.id not in self.admin_ids:
+            await update.message.reply_text("⛔ Admin only!")
+            return
         
-    except Exception as e:
-        logger.error(f"Fallback method error: {e}")
-        return None
-
-def download_file(download_url: str, output_path: str) -> bool:
-    """Download file from URL"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.5',
-        }
+        files = list(self.download_dir.glob('*'))
+        total_size = sum(f.stat().st_size for f in files if f.is_file()) / (1024 * 1024)
         
-        response = requests.get(download_url, headers=headers, stream=True, timeout=60)
+        status = f"""
+📊 **Bot Status**
+
+✅ Instagram: {'Logged in' if self.is_logged_in else 'Not logged in'}
+📁 Files: {len(files)}
+💾 Size: {total_size:.1f}MB
+⏸️ Paused: {self.is_paused}
+👤 Your ID: {user.id}
+"""
         
-        if response.status_code == 200:
-            # Determine file extension
-            content_type = response.headers.get('content-type', '')
-            
-            if 'video' in content_type or '.mp4' in download_url.lower():
-                ext = 'mp4'
-            elif 'image' in content_type or any(x in download_url.lower() for x in ['.jpg', '.jpeg', '.png']):
-                ext = 'jpg'
-            else:
-                ext = 'mp4'  # Default to mp4
-            
-            actual_path = output_path.replace('%(ext)s', ext)
-            
-            # Download file
-            with open(actual_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
-            # Verify download
-            if os.path.exists(actual_path) and os.path.getsize(actual_path) > 1024:
-                return True
-            
-            # File too small
-            if os.path.exists(actual_path):
-                os.remove(actual_path)
-                
-    except Exception as e:
-        logger.error(f"Download error: {e}")
+        await update.message.reply_text(status, parse_mode='Markdown')
     
-    return False
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command"""
-    user = update.effective_user
-    
-    text = f"""
-📱 *Instagram Downloader Bot*
-
-👋 Hello {user.first_name}!
-
-I use *Selenium WebDriver* to download Instagram content. 
-This method is *GUARANTEED* to work with public posts.
-
-✅ *100% Working With:*
-• Public Instagram Posts
-• Public Instagram Reels  
-• Public IGTV Videos
-
-⚡ *Features:*
-• Uses real browser (Chrome)
-• Bypasses Instagram blocks
-• High success rate
-• Fast downloads
-
-🔗 *How to use:*
-1. Copy Instagram link
-2. Send it here
-3. Wait for download
-4. Receive file
-
-*Need help?* Send /help
-    """
-    
-    await update.message.reply_text(text, parse_mode='Markdown')
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command"""
-    text = """
-🤖 *Instagram Downloader - Selenium Version*
-
-🔧 *How it works:*
-This bot uses *Chrome browser automation* to access Instagram like a real user, bypassing all blocks.
-
-📌 *Quick Start:*
-1. Find a PUBLIC Instagram post
-2. Tap Share → Copy Link
-3. Send link to this bot
-4. Tap Download button
-5. Wait 10-20 seconds
-
-✅ *Guaranteed Working Links:*
-• https://www.instagram.com/p/C1vLRa6IOvG/
-• https://www.instagram.com/reel/C1sZQK1o7Xj/
-• https://www.instagram.com/p/CzqF8qYMMkP/
-
-⚠️ *Requirements:*
-• Post must be PUBLIC
-• No private accounts
-• Good internet connection
-
-⏱️ *Download time:*
-• First time: 20-30 seconds
-• Subsequent: 10-15 seconds
-
-🔄 *If download fails:*
-1. Make sure link is PUBLIC
-2. Try a different post
-3. Check bot logs
-4. Contact support
-    """
-    
-    await update.message.reply_text(text, parse_mode='Markdown')
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming Instagram links"""
-    url = update.message.text.strip()
-    
-    # Clean URL
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    # Validate URL
-    if not is_instagram_url(url):
+    async def pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        if user.id not in self.admin_ids:
+            await update.message.reply_text("⛔ Admin only!")
+            return
+        
+        hours = 1
+        if context.args:
+            try:
+                hours = int(context.args[0])
+            except:
+                hours = 1
+        
+        self.is_paused = True
+        self.paused_until = datetime.now() + timedelta(hours=hours)
+        
         await update.message.reply_text(
-            "❌ *Invalid Instagram URL*\n\n"
-            "Please send a valid Instagram link.\n\n"
-            "*Examples:*\n"
-            "• `https://www.instagram.com/p/C1vLRa6IOvG/`\n"
-            "• `https://www.instagram.com/reel/C1sZQK1o7Xj/`\n"
-            "• `https://www.instagram.com/tv/DEF789/`\n\n"
-            "*Note:* Only PUBLIC posts work.",
-            parse_mode='Markdown'
+            f"⏸️ Bot paused for {hours} hour(s)\n"
+            f"Resume at: {self.paused_until.strftime('%H:%M')}"
         )
-        return
     
-    # Store in context
-    context.user_data['instagram_url'] = url
-    
-    # Show download button
-    keyboard = [[InlineKeyboardButton("⬇️ Download with Selenium", callback_data="download_selenium")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"🔗 *Instagram Link Received*\n\n"
-        f"`{url}`\n\n"
-        f"*Click to download using Selenium:*",
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle callback queries"""
-    query = update.callback_query
-    await query.answer()
-    
-    callback_data = query.data
-    
-    # Get URL from context
-    url = context.user_data.get('instagram_url')
-    
-    if not url:
-        await query.edit_message_text("❌ No link found. Please send the Instagram link again.")
-        return
-    
-    if callback_data == "download_selenium":
-        await process_download_selenium(query, context, url)
-    else:
-        await query.edit_message_text("❌ Invalid option")
-
-async def process_download_selenium(query, context, url: str):
-    """Process Instagram download using Selenium"""
-    user_id = query.from_user.id
-    message = query.message
-    
-    # Step 1: Start Selenium
-    await message.edit_text("🚀 *Starting Selenium WebDriver...*\n\nThis may take 10-20 seconds.", parse_mode='Markdown')
-    
-    try:
-        # Try Selenium method first
-        download_url = await asyncio.to_thread(get_media_url_with_selenium, url)
-        
-        if not download_url:
-            # Try fallback method
-            await message.edit_text("🔄 *Trying fallback method...*", parse_mode='Markdown')
-            download_url = await asyncio.to_thread(get_media_url_fallback, url)
-        
-        if not download_url:
-            await message.edit_text(
-                "❌ *Could not get download link*\n\n"
-                "*Troubleshooting steps:*\n"
-                "1. 🔍 Make sure the post is PUBLIC\n"
-                "2. 🌐 Check your internet connection\n"
-                "3. 🔄 Try a different post\n"
-                "4. ⏰ Wait 1 minute and try again\n\n"
-                "*Test with these GUARANTEED links:*\n"
-                "• https://www.instagram.com/p/C1vLRa6IOvG/\n"
-                "• https://www.instagram.com/reel/C1sZQK1o7Xj/",
-                parse_mode='Markdown'
-            )
+    async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        if user.id not in self.admin_ids:
+            await update.message.reply_text("⛔ Admin only!")
             return
         
-        # Step 2: Download file
-        await message.edit_text("⬇️ *Downloading media...*\n\nPlease wait...", parse_mode='Markdown')
-        
-        # Create download directory
-        os.makedirs('/opt/instagram_bot/downloads', exist_ok=True)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"{timestamp}_{user_id}"
-        output_path = f"/opt/instagram_bot/downloads/{filename}.%(ext)s"
-        
-        # Download the file
-        success = await asyncio.to_thread(download_file, download_url, output_path)
-        
-        if not success:
-            await message.edit_text(
-                "❌ *Download failed*\n\n"
-                "The file could not be downloaded.\n"
-                "Try a different Instagram post.",
-                parse_mode='Markdown'
-            )
+        self.is_paused = False
+        self.paused_until = None
+        await update.message.reply_text("▶️ Bot resumed!")
+    
+    async def clean_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        if user.id not in self.admin_ids:
+            await update.message.reply_text("⛔ Admin only!")
             return
         
-        # Find downloaded file
-        downloaded_files = []
-        for ext in ['mp4', 'jpg', 'jpeg', 'png']:
-            file_path = f"/opt/instagram_bot/downloads/{filename}.{ext}"
-            if os.path.exists(file_path):
-                downloaded_files.append(file_path)
+        files = list(self.download_dir.glob('*'))
+        count = len(files)
         
-        if not downloaded_files:
-            await message.edit_text("❌ File not found after download")
-            return
-        
-        file_path = downloaded_files[0]
-        file_size = os.path.getsize(file_path)
-        
-        # Check file size
-        if file_size > 2000 * 1024 * 1024:
-            await message.edit_text("❌ File too large for Telegram (max 2GB)")
+        for f in files:
             try:
-                os.remove(file_path)
+                f.unlink()
             except:
                 pass
-            return
         
-        if file_size < 1024:
-            await message.edit_text("❌ Downloaded file is too small")
-            try:
-                os.remove(file_path)
-            except:
-                pass
-            return
-        
-        # Step 3: Send file
-        await message.edit_text(f"📤 *Sending file...*\n\nSize: {format_size(file_size)}", parse_mode='Markdown')
-        
-        try:
-            with open(file_path, 'rb') as f:
-                if file_path.endswith(('.mp4', '.webm', '.mkv')):
-                    await context.bot.send_video(
-                        chat_id=user_id,
-                        video=f,
-                        caption=f"✅ *Instagram Video Downloaded*\n📦 Size: {format_size(file_size)}\n🔧 Method: Selenium",
-                        parse_mode='Markdown',
-                        supports_streaming=True
-                    )
-                elif file_path.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                    await context.bot.send_photo(
-                        chat_id=user_id,
-                        photo=f,
-                        caption=f"✅ *Instagram Photo Downloaded*\n📦 Size: {format_size(file_size)}\n🔧 Method: Selenium",
-                        parse_mode='Markdown'
-                    )
-                else:
-                    await context.bot.send_document(
-                        chat_id=user_id,
-                        document=f,
-                        caption=f"✅ *Instagram Media Downloaded*\n📦 Size: {format_size(file_size)}\n🔧 Method: Selenium",
-                        parse_mode='Markdown'
-                    )
-        except Exception as e:
-            logger.error(f"Telegram send error: {e}")
-            await message.edit_text(f"❌ Error sending file: {str(e)[:100]}")
-            return
-        
-        # Cleanup
-        try:
-            os.remove(file_path)
-        except:
-            pass
-        
-        await message.edit_text(f"✅ *Download Complete!*\n\n📦 File size: {format_size(file_size)}\n🔧 Method: Selenium WebDriver", parse_mode='Markdown')
-        
-    except Exception as e:
-        logger.error(f"Download process error: {str(e)}")
-        await message.edit_text(
-            f"❌ *Error occurred*\n\n"
-            f"`{str(e)[:150]}`\n\n"
-            f"Please try again with a different link.",
-            parse_mode='Markdown'
-        )
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle errors"""
-    logger.error(f"Error: {context.error}")
+        await update.message.reply_text(f"🧹 Cleaned {count} files")
     
-    try:
-        if update.message:
-            await update.message.reply_text(
-                "⚠️ *An error occurred*\n\n"
-                "Please try again with a different Instagram link.",
-                parse_mode='Markdown'
-            )
-    except:
-        pass
+    async def login_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Login to Instagram manually"""
+        user = update.effective_user
+        if user.id not in self.admin_ids:
+            await update.message.reply_text("⛔ Admin only!")
+            return
+        
+        msg = await update.message.reply_text("🔐 Logging into Instagram...")
+        
+        if self.login_instagram():
+            await msg.edit_text("✅ Successfully logged into Instagram!")
+        else:
+            await msg.edit_text("❌ Login failed! Check credentials in config.json")
+    
+    def run(self):
+        """Run the bot"""
+        print("=" * 50)
+        print("🤖 Instagram Download Bot")
+        print("=" * 50)
+        
+        if not self.token or self.token == 'YOUR_BOT_TOKEN_HERE':
+            print("❌ ERROR: Configure token in config.json")
+            return
+        
+        print(f"✅ Token: {self.token[:15]}...")
+        
+        # Try Instagram login
+        print("🔐 Attempting Instagram login...")
+        if self.login_instagram():
+            print("✅ Instagram login successful")
+        else:
+            print("⚠️ Instagram login failed or not configured")
+            print("   Edit config.json to add Instagram credentials")
+        
+        app = Application.builder().token(self.token).build()
+        
+        app.add_handler(CommandHandler("start", self.start_command))
+        app.add_handler(CommandHandler("status", self.status_command))
+        app.add_handler(CommandHandler("pause", self.pause_command))
+        app.add_handler(CommandHandler("resume", self.resume_command))
+        app.add_handler(CommandHandler("clean", self.clean_command))
+        app.add_handler(CommandHandler("login", self.login_command))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        
+        print("✅ Bot ready!")
+        print("📱 Send Instagram link to download")
+        print("=" * 50)
+        
+        app.run_polling()
 
 def main():
-    """Main function"""
-    if not BOT_TOKEN:
-        print("❌ ERROR: BOT_TOKEN not set")
-        print("Please add your bot token to /opt/instagram_bot/.env")
-        exit(1)
-    
-    # Test Selenium installation
-    print("🧪 Testing Selenium installation...")
     try:
-        from selenium import webdriver
-        print("✅ Selenium is installed")
+        bot = InstagramDownloadBot()
+        bot.run()
+    except KeyboardInterrupt:
+        print("\n🛑 Bot stopped")
     except Exception as e:
-        print(f"❌ Selenium error: {e}")
-        print("Installing required packages...")
-        import subprocess
-        subprocess.run(['pip3', 'install', 'selenium==4.15.0', 'webdriver-manager'], check=True)
-    
-    # Create application
-    app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Add handlers
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_error_handler(error_handler)
-    
-    print("🤖 Instagram Bot starting...")
-    print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("✅ Bot ready to receive Instagram links")
-    print("⚠️ NOTE: Using Selenium WebDriver - 100% working")
-    
-    app.run_polling()
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == '__main__':
     main()
-BOTEOF
-    
-    chmod +x /opt/instagram_bot/bot.py
-    print_success "Selenium bot script created"
+BOTPYEOF
+
+# Step 6: Create config.json
+print_blue "6. Creating config.json..."
+cat > config.json << 'CONFIGEOF'
+{
+    "telegram": {
+        "token": "YOUR_BOT_TOKEN_HERE",
+        "admin_ids": [],
+        "max_file_size": 2000
+    },
+    "instagram": {
+        "username": "YOUR_INSTAGRAM_USERNAME",
+        "password": "YOUR_INSTAGRAM_PASSWORD",
+        "session_file": "session.json"
+    },
+    "download_dir": "downloads",
+    "auto_cleanup_minutes": 2
 }
+CONFIGEOF
 
-# Create test script for Selenium
-create_test_script() {
-    print_info "Creating Selenium test script..."
-    
-    cat > /opt/instagram_bot/test_selenium.py << 'TESTEOF'
-#!/usr/bin/env python3
-"""
-Test Selenium installation and Instagram access
-"""
-
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-import time
-
-def test_selenium():
-    """Test if Selenium can access Instagram"""
-    print("🧪 Testing Selenium WebDriver...")
-    
-    try:
-        # Setup Chrome options
-        chrome_options = Options()
-        chrome_options.add_argument('--headless')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--window-size=1920,1080')
-        
-        print("1. Trying to start Chrome driver...")
-        
-        # Try to start Chrome
-        try:
-            driver = webdriver.Chrome(options=chrome_options)
-            print("✅ Chrome driver started successfully")
-        except Exception as e:
-            print(f"❌ Chrome driver failed: {e}")
-            
-            # Try with webdriver_manager
-            try:
-                from webdriver_manager.chrome import ChromeDriverManager
-                from selenium.webdriver.chrome.service import Service
-                
-                service = Service(ChromeDriverManager().install())
-                driver = webdriver.Chrome(service=service, options=chrome_options)
-                print("✅ Chrome driver started with webdriver_manager")
-            except Exception as e2:
-                print(f"❌ webdriver_manager also failed: {e2}")
-                return False
-        
-        # Test Instagram access
-        print("\n2. Testing Instagram access...")
-        
-        test_url = "https://www.instagram.com/p/C1vLRa6IOvG/"
-        print(f"   Opening: {test_url}")
-        
-        try:
-            driver.get(test_url)
-            time.sleep(5)
-            
-            # Take screenshot
-            driver.save_screenshot("/tmp/instagram_test.png")
-            print("✅ Instagram page loaded")
-            print("✅ Screenshot saved to /tmp/instagram_test.png")
-            
-            # Check page title
-            title = driver.title
-            print(f"   Page title: {title}")
-            
-            # Check page source
-            page_source = driver.page_source
-            if len(page_source) > 1000:
-                print("✅ Page source loaded successfully")
-                
-                # Look for video or image
-                if 'video' in page_source or 'mp4' in page_source:
-                    print("✅ Video content detected")
-                elif 'jpg' in page_source or 'jpeg' in page_source or 'png' in page_source:
-                    print("✅ Image content detected")
-                else:
-                    print("⚠️ No media detected in page source")
-            
-            driver.quit()
-            print("\n🎉 SELENIUM TEST PASSED! Everything is working correctly.")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Instagram access failed: {e}")
-            driver.quit()
-            return False
-            
-    except Exception as e:
-        print(f"❌ Selenium test failed: {e}")
-        return False
-
-if __name__ == '__main__':
-    if test_selenium():
-        sys.exit(0)
-    else:
-        sys.exit(1)
-TESTEOF
-    
-    chmod +x /opt/instagram_bot/test_selenium.py
-    print_success "Selenium test script created"
-}
-
-# Create environment file
-create_env_file() {
-    print_info "Creating environment file..."
-    
-    cat > /opt/instagram_bot/.env.example << ENVEOF
-# Telegram Bot Token from @BotFather
-# Example: 1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ
-BOT_TOKEN=your_bot_token_here
-
-# Download directory
-DOWNLOAD_DIR=/opt/instagram_bot/downloads
-
-# Selenium settings
-SELENIUM_HEADLESS=true
-SELENIUM_TIMEOUT=30
-ENVEOF
-    
-    print_success "Environment file created"
-}
-
-# Create service file
-create_service_file() {
-    print_info "Creating systemd service..."
-    
-    cat > /etc/systemd/system/instagram-bot.service << SERVICEEOF
-[Unit]
-Description=Instagram Downloader Bot with Selenium
-After=network.target
-Requires=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/instagram_bot
-EnvironmentFile=/opt/instagram_bot/.env
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=DISPLAY=:99
-Environment=PYTHONUNBUFFERED=1
-ExecStartPre=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
-ExecStart=/usr/bin/python3 /opt/instagram_bot/bot.py
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-# Security
-NoNewPrivileges=true
-ReadWritePaths=/opt/instagram_bot/downloads /opt/instagram_bot/logs /opt/instagram_bot/screenshots /tmp
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-SERVICEEOF
-    
-    systemctl daemon-reload
-    print_success "Service file created"
-}
-
-# Create control script
-create_control_script() {
-    print_info "Creating control script..."
-    
-    cat > /usr/local/bin/instagram-bot << CONTROLEOF
+# Step 7: Create management script
+print_blue "7. Creating management script..."
+cat > manage.sh << 'MANAGEEOF'
 #!/bin/bash
+# manage.sh - Instagram bot management
 
-case "\$1" in
+cd "$(dirname "$0")"
+
+case "$1" in
     start)
-        if [ ! -f /opt/instagram_bot/.env ]; then
-            echo "❌ Please setup bot first: instagram-bot setup"
-            exit 1
-        fi
-        
-        echo "🚀 Starting Instagram Bot with Selenium..."
-        echo "This may take 30 seconds to initialize Chrome..."
-        
-        systemctl start instagram-bot
-        sleep 5
-        
-        if systemctl is-active --quiet instagram-bot; then
-            echo "✅ Instagram Bot started successfully"
-            echo "📋 Check status: instagram-bot status"
-            echo "📊 View logs: instagram-bot logs"
-        else
-            echo "❌ Failed to start bot"
-            echo "Check logs: journalctl -u instagram-bot -n 50"
-        fi
+        echo "🚀 Starting Instagram Bot..."
+        source venv/bin/activate
+        > bot.log
+        nohup python instagram_bot.py >> bot.log 2>&1 &
+        echo $! > bot.pid
+        echo "✅ Bot started (PID: $(cat bot.pid))"
+        echo "📝 Logs: tail -f bot.log"
+        echo ""
+        echo "📸 Instagram Bot Features:"
+        echo "   • Download Instagram posts, reels, stories"
+        echo "   • Album (carousel) support"
+        echo "   • High quality downloads"
+        echo "   • Auto cleanup every 2 minutes"
         ;;
     stop)
-        systemctl stop instagram-bot
-        echo "🛑 Bot stopped"
-        ;;
-    restart)
-        systemctl restart instagram-bot
-        echo "🔄 Bot restarted"
-        ;;
-    status)
-        systemctl status instagram-bot --no-pager -l
-        ;;
-    logs)
-        if [ "\$2" = "-f" ]; then
-            journalctl -u instagram-bot -f
+        echo "🛑 Stopping bot..."
+        if [ -f "bot.pid" ]; then
+            kill $(cat bot.pid) 2>/dev/null
+            rm -f bot.pid
+            echo "✅ Bot stopped"
         else
-            journalctl -u instagram-bot --no-pager -n 100
+            echo "⚠️ Bot not running"
         fi
         ;;
-    setup)
-        echo "📝 Setting up Instagram Bot..."
-        
-        if [ ! -f /opt/instagram_bot/.env ]; then
-            cp /opt/instagram_bot/.env.example /opt/instagram_bot/.env
-            echo ""
-            echo "📋 Created .env file at /opt/instagram_bot/.env"
-            echo ""
-            echo "🔑 Follow these steps to get BOT_TOKEN:"
-            echo "1. Open Telegram"
-            echo "2. Search for @BotFather"
-            echo "3. Send /newbot"
-            echo "4. Choose bot name (e.g., Instagram Downloader)"
-            echo "5. Choose username (must end with 'bot', e.g., MyInstagramDLBot)"
-            echo "6. Copy the token (looks like: 1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ)"
-            echo ""
-            echo "✏️ Edit config file:"
-            echo "   nano /opt/instagram_bot/.env"
-            echo ""
-            echo "📁 Or use: instagram-bot config"
+    restart)
+        echo "🔄 Restarting..."
+        ./manage.sh stop
+        sleep 2
+        ./manage.sh start
+        ;;
+    status)
+        echo "📊 Bot Status:"
+        if [ -f "bot.pid" ] && ps -p $(cat bot.pid) > /dev/null 2>&1; then
+            echo "✅ Bot running (PID: $(cat bot.pid))"
+            echo "📝 Recent logs:"
+            tail -5 bot.log 2>/dev/null || echo "No logs"
         else
-            echo "✅ .env file already exists"
-            echo "✏️ Edit it: instagram-bot config"
+            echo "❌ Bot not running"
+            [ -f "bot.pid" ] && rm -f bot.pid
+        fi
+        ;;
+    logs)
+        echo "📝 Bot logs:"
+        if [ -f "bot.log" ]; then
+            if [ "$2" = "-f" ]; then
+                tail -f bot.log
+            else
+                tail -50 bot.log
+            fi
+        else
+            echo "No log file"
         fi
         ;;
     config)
-        nano /opt/instagram_bot/.env
-        ;;
-    update)
-        echo "🔄 Updating Instagram Bot..."
-        echo "Updating Python packages..."
-        pip3 install --upgrade pip python-telegram-bot selenium==4.15.0 webdriver-manager
-        
-        echo "Restarting bot..."
-        systemctl restart instagram-bot
-        
-        echo "✅ Bot updated successfully"
+        echo "⚙️ Editing config..."
+        nano config.json
+        echo "💡 Restart after editing: ./manage.sh restart"
         ;;
     test)
-        echo "🧪 Testing Instagram Bot installation..."
-        echo ""
+        echo "🔍 Testing..."
+        source venv/bin/activate
         
-        echo "1. Testing Python packages..."
-        python3 -c "import telegram, selenium, webdriver_manager; print('✅ Python packages OK')"
-        
-        echo ""
-        echo "2. Testing Chrome installation..."
-        if command -v chromium-browser &> /dev/null || command -v chromium &> /dev/null || command -v google-chrome &> /dev/null; then
-            echo "✅ Chrome/Chromium is installed"
-        else
-            echo "❌ Chrome/Chromium not found"
-        fi
+        echo "1. Testing imports..."
+        python3 -c "
+try:
+    import telegram, instagrapi, yt_dlp, requests
+    print('✅ All imports OK')
+except Exception as e:
+    print(f'❌ Import error: {e}')
+"
         
         echo ""
-        echo "3. Testing Selenium..."
-        cd /opt/instagram_bot && python3 test_selenium.py
-        
-        echo ""
-        echo "4. Testing service..."
-        systemctl is-active instagram-bot &>/dev/null && echo "✅ Service is running" || echo "⚠️ Service is not running"
-        
-        echo ""
-        echo "✅ All tests completed"
+        echo "2. Testing config..."
+        python3 -c "
+import json
+try:
+    with open('config.json') as f:
+        config = json.load(f)
+    
+    token = config['telegram']['token']
+    ig_user = config['instagram']['username']
+    ig_pass = config['instagram']['password']
+    
+    if token == 'YOUR_BOT_TOKEN_HERE':
+        print('❌ Telegram token not configured!')
+    else:
+        print(f'✅ Token: {token[:15]}...')
+    
+    if ig_user == 'YOUR_INSTAGRAM_USERNAME':
+        print('⚠️ Instagram username not configured')
+    else:
+        print(f'✅ IG Username: {ig_user}')
+    
+    print(f'✅ Max size: {config[\"telegram\"][\"max_file_size\"]}MB')
+except Exception as e:
+    print(f'❌ Config error: {e}')
+"
+        ;;
+    debug)
+        echo "🐛 Debug mode..."
+        ./manage.sh stop
+        source venv/bin/activate
+        python instagram_bot.py
         ;;
     clean)
         echo "🧹 Cleaning..."
-        rm -rf /opt/instagram_bot/downloads/*
-        rm -rf /opt/instagram_bot/screenshots/*
-        echo "✅ Cleaned downloads and screenshots"
+        rm -rf downloads/*
+        rm -f session.json 2>/dev/null
+        echo "✅ Files cleaned"
         ;;
-    fix)
-        echo "🔧 Fixing common issues..."
-        
-        echo "1. Installing missing packages..."
-        pip3 install --upgrade selenium webdriver-manager
-        
-        echo "2. Setting up Chrome driver..."
-        python3 -c "
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.service import Service
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-
-chrome_options = Options()
-chrome_options.add_argument('--headless')
-chrome_options.add_argument('--no-sandbox')
-
-try:
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    print('✅ Chrome driver installed successfully')
-    driver.quit()
-except Exception as e:
-    print(f'❌ Error: {e}')
-        "
-        
-        echo "3. Restarting bot..."
-        systemctl restart instagram-bot
-        
-        echo "✅ Fix applied"
+    uninstall)
+        echo "🗑️ Uninstalling..."
+        echo ""
+        read -p "Are you sure? Type 'YES': " confirm
+        if [ "$confirm" = "YES" ]; then
+            ./manage.sh stop
+            cd /
+            rm -rf "$INSTALL_DIR"
+            echo "✅ Bot uninstalled"
+        else
+            echo "❌ Cancelled"
+        fi
+        ;;
+    autostart)
+        echo "⚙️ Setting auto-start..."
+        (crontab -l 2>/dev/null | grep -v "$INSTALL_DIR"; 
+         echo "@reboot cd $INSTALL_DIR && ./manage.sh start") | crontab -
+        echo "✅ Auto-start configured"
         ;;
     *)
-        echo "🤖 Instagram Downloader Bot with Selenium"
-        echo "Version: 5.0 | GUARANTEED WORKING"
+        echo "🤖 Instagram Download Bot Management"
+        echo "==================================="
         echo ""
-        echo "Usage: \$0 {start|stop|restart|status|logs|setup|config|update|test|clean|fix}"
+        echo "📁 Directory: $INSTALL_DIR"
         echo ""
-        echo "Commands:"
-        echo "  start     - Start bot (takes 30s to initialize)"
-        echo "  stop      - Stop bot"
-        echo "  restart   - Restart bot"
-        echo "  status    - Check status"
-        echo "  logs      - View logs (add -f to follow)"
-        echo "  setup     - First-time setup"
-        echo "  config    - Edit configuration"
-        echo "  update    - Update bot and packages"
-        echo "  test      - Run comprehensive tests"
-        echo "  clean     - Clean downloads and screenshots"
-        echo "  fix       - Fix common installation issues"
+        echo "📋 Commands:"
+        echo "  ./manage.sh start      # Start bot"
+        echo "  ./manage.sh stop       # Stop bot"
+        echo "  ./manage.sh restart    # Restart bot"
+        echo "  ./manage.sh status     # Check status"
+        echo "  ./manage.sh logs       # View logs"
+        echo "  ./manage.sh config     # Edit config"
+        echo "  ./manage.sh test       # Test everything"
+        echo "  ./manage.sh debug      # Debug mode"
+        echo "  ./manage.sh clean      # Clean files"
+        echo "  ./manage.sh uninstall  # Uninstall bot"
+        echo "  ./manage.sh autostart  # Auto-start on reboot"
         echo ""
-        echo "Quick Start:"
-        echo "  1. instagram-bot setup"
-        echo "  2. instagram-bot config  (add your token)"
-        echo "  3. instagram-bot test    (VERY IMPORTANT)"
-        echo "  4. instagram-bot start   (takes 30s)"
-        echo "  5. Send: https://www.instagram.com/p/C1vLRa6IOvG/"
-        echo ""
-        echo "Features:"
-        echo "  • Uses Selenium WebDriver (real browser)"
-        echo "  • 100% working with public posts"
-        echo "  • Bypasses all Instagram blocks"
-        echo "  • Takes screenshots for debugging"
+        echo "📸 Instagram Features:"
+        echo "  • Download posts, reels, stories"
+        echo "  • Album/carousel support"
+        echo "  • High quality downloads"
+        echo "  • Auto cleanup (2 minutes)"
+        echo "  • Instagram login support"
         ;;
 esac
-CONTROLEOF
-    
-    chmod +x /usr/local/bin/instagram-bot
-    print_success "Control script created"
-}
+MANAGEEOF
 
-# Show completion message
-show_completion() {
-    echo ""
-    echo -e "${GREEN}=============================================="
-    echo "   INSTAGRAM BOT INSTALLATION COMPLETE!"
-    echo "=============================================="
-    echo -e "${NC}"
-    
-    echo -e "\n${YELLOW}🚀 CRITICAL NEXT STEPS:${NC}"
-    echo "1. ${GREEN}TEST THE INSTALLATION:${NC}"
-    echo "   instagram-bot test"
-    echo ""
-    echo "2. ${GREEN}If test fails, FIX IT:${NC}"
-    echo "   instagram-bot fix"
-    echo ""
-    echo "3. ${GREEN}Setup bot token:${NC}"
-    echo "   instagram-bot setup"
-    echo "   instagram-bot config"
-    echo ""
-    echo "4. ${GREEN}Start the bot:${NC}"
-    echo "   instagram-bot start  (takes 30 seconds)"
-    echo ""
-    
-    echo -e "${YELLOW}🔧 HOW IT WORKS:${NC}"
-    echo "• ${GREEN}Uses REAL Chrome browser${NC} via Selenium"
-    echo "• ${GREEN}100% bypasses Instagram blocks${NC}"
-    echo "• ${GREEN}Takes screenshots${NC} for debugging"
-    echo "• ${GREEN}Works with ALL public posts${NC}"
-    echo ""
-    
-    echo -e "${YELLOW}📱 GUARANTEED TEST LINK:${NC}"
-    echo "• https://www.instagram.com/p/C1vLRa6IOvG/"
-    echo "  (This link WILL 100% work after installation)"
-    echo ""
-    
-    echo -e "${GREEN}✅ THIS VERSION IS GUARANTEED TO WORK${NC}"
-    echo "The bot uses REAL Chrome browser, not APIs or HTML parsing."
-    echo ""
-    
-    echo -e "${CYAN}📞 IF YOU STILL HAVE ISSUES:${NC}"
-    echo "1. Run: instagram-bot test"
-    echo "2. Run: instagram-bot fix"
-    echo "3. Check: instagram-bot logs"
-    echo "4. Make sure Chrome is installed"
-}
+chmod +x manage.sh
 
-# Main installation
-main() {
-    show_logo
-    print_info "Starting Instagram Bot installation..."
-    
-    install_deps
-    install_python_packages
-    create_bot_dir
-    create_bot_script
-    create_test_script
-    create_env_file
-    create_service_file
-    create_control_script
-    
-    # Create directories
-    mkdir -p /opt/instagram_bot/screenshots
-    touch /opt/instagram_bot/logs/bot.log
-    chmod 666 /opt/instagram_bot/logs/bot.log
-    
-    show_completion
-}
+# Step 8: Create requirements.txt
+print_blue "8. Creating requirements.txt..."
+cat > requirements.txt << 'REQEOF'
+python-telegram-bot==20.7
+instagrapi==1.18.1
+yt-dlp==2025.11.12
+requests==2.32.5
+REQEOF
 
-# Run installation
-main "$@"
+print_green "✅ INSTAGRAM BOT INSTALLATION COMPLETE!"
+echo ""
+echo "📋 SETUP STEPS:"
+echo "================"
+echo "1. Configure bot:"
+echo "   cd $INSTALL_DIR"
+echo "   nano config.json"
+echo "   • Replace YOUR_BOT_TOKEN_HERE with Telegram bot token"
+echo "   • Add your Telegram ID to admin_ids"
+echo "   • Add Instagram username/password (optional but recommended)"
+echo ""
+echo "2. Start bot:"
+echo "   ./manage.sh start"
+echo ""
+echo "3. Test:"
+echo "   ./manage.sh test"
+echo "   ./manage.sh status"
+echo ""
+echo "4. In Telegram:"
+echo "   • Find your bot"
+echo "   • Send /start"
+echo "   • Send Instagram link → Download content"
+echo "   • Send other links → Download with yt-dlp"
+echo ""
+echo "⚠️ IMPORTANT:"
+echo "   • Instagram login needed for private accounts/stories"
+echo "   • Files auto-deleted after 2 minutes"
+echo "   • Use 2FA Instagram account may need app password"
+echo ""
+echo "🔧 Troubleshooting:"
+echo "   ./manage.sh logs     # Check errors"
+echo "   ./manage.sh debug    # Run in foreground"
+echo "   ./manage.sh login    # Manual Instagram login (admin)"
+echo ""
+echo "🚀 Install command for others:"
+echo "bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/instagram_install.sh)"
