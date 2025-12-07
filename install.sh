@@ -1,1163 +1,576 @@
 #!/bin/bash
-# quality_install.sh - Install Telegram bot with quality selection
-# Run: bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/quality_install.sh)
+
+# Instagram Telegram Bot - Simple Version
+# Save this as install.sh on GitHub
+# Run: bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-instagram/main/install.sh)
 
 set -e
 
-echo "🎯 Installing Telegram Bot with Quality Selection"
-echo "================================================"
+echo "=========================================="
+echo "Instagram Telegram Bot Installer"
+echo "=========================================="
 
 # Colors
-GREEN='\033[0;32m'
 RED='\033[0;31m'
-BLUE='\033[0;34m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
-print_green() { echo -e "${GREEN}[✓]${NC} $1"; }
-print_red() { echo -e "${RED}[✗]${NC} $1"; }
-print_blue() { echo -e "${BLUE}[i]${NC} $1"; }
+# Functions
+print_success() { echo -e "${GREEN}[✓]${NC} $1"; }
+print_error() { echo -e "${RED}[✗]${NC} $1"; }
+print_info() { echo -e "${YELLOW}[i]${NC} $1"; }
 
-# Install directory
-INSTALL_DIR="/opt/quality-tg-bot"
+# Step 1: Check if running as root
+if [ "$EUID" -ne 0 ]; then 
+    print_info "Running as non-root user, using sudo for system commands"
+    SUDO="sudo"
+else
+    SUDO=""
+fi
 
-# Step 1: Cleanup
-print_blue "1. Cleaning old installations..."
-pkill -f "python.*bot.py" 2>/dev/null || true
-rm -rf "$INSTALL_DIR" 2>/dev/null || true
-mkdir -p "$INSTALL_DIR"
-cd "$INSTALL_DIR"
+# Step 2: Update and install dependencies
+print_info "Step 1: Updating system packages..."
+$SUDO apt-get update -y
+$SUDO apt-get upgrade -y
 
-# Step 2: Install dependencies
-print_blue "2. Installing system dependencies..."
-apt-get update -y
-apt-get install -y python3 python3-pip python3-venv git curl wget ffmpeg nano cron
+print_info "Step 2: Installing Python and dependencies..."
+$SUDO apt-get install -y python3 python3-pip python3-venv git curl wget
 
-# Step 3: Create virtual environment
-print_blue "3. Creating virtual environment..."
+# Step 3: Create installation directory
+print_info "Step 3: Creating installation directory..."
+INSTALL_DIR="/opt/instagram_bot"
+$SUDO mkdir -p $INSTALL_DIR
+cd $INSTALL_DIR
+
+# Step 4: Create virtual environment
+print_info "Step 4: Creating Python virtual environment..."
 python3 -m venv venv
 source venv/bin/activate
 
-# Step 4: Install Python packages
-print_blue "4. Installing Python packages..."
+# Step 5: Install Python packages
+print_info "Step 5: Installing required Python packages..."
 pip install --upgrade pip
-pip install python-telegram-bot==20.7 yt-dlp==2025.11.12 requests==2.32.5
+pip install python-telegram-bot==20.7 requests beautifulsoup4 lxml
 
-# Step 5: Create bot.py with quality selection
-print_blue "5. Creating bot.py with quality selection..."
-cat > bot.py << 'BOTPYEOF'
+# Step 6: Create bot configuration
+print_info "Step 6: Creating bot configuration..."
+
+# Ask for Telegram Bot Token
+echo ""
+echo "=========================================="
+echo "TELEGRAM BOT TOKEN SETUP"
+echo "=========================================="
+echo "To get your bot token:"
+echo "1. Open Telegram"
+echo "2. Search for @BotFather"
+echo "3. Send /newbot command"
+echo "4. Follow the instructions"
+echo "5. Copy the token (looks like: 1234567890:ABCdefGHIjklMnOpQRstUVwxyz)"
+echo "=========================================="
+echo ""
+
+read -p "Enter your Telegram Bot Token: " BOT_TOKEN
+
+# Validate token format
+if [ -z "$BOT_TOKEN" ]; then
+    print_error "Token cannot be empty!"
+    exit 1
+fi
+
+if [[ ! "$BOT_TOKEN" =~ ^[0-9]{8,10}:[a-zA-Z0-9_-]{35}$ ]]; then
+    print_info "Warning: Token format looks unusual, but continuing anyway..."
+fi
+
+# Create config file
+cat > config.json << EOF
+{
+    "telegram_token": "$BOT_TOKEN",
+    "admin_ids": [],
+    "log_file": "/var/log/instagram_bot.log",
+    "temp_dir": "/tmp/instagram_bot"
+}
+EOF
+
+# Step 7: Create the main bot file
+print_info "Step 7: Creating bot.py..."
+cat > bot.py << 'EOF'
 #!/usr/bin/env python3
 """
-Telegram Download Bot with Quality Selection
-Features:
-1. Quality selection for YouTube/Twitter with file sizes
-2. Original format preservation for direct files
-3. Auto cleanup every 2 minutes
-4. Pause/Resume functionality
+Instagram Telegram Bot
+Send Instagram link → Get JSON file
 """
 
 import os
+import sys
 import json
 import logging
-import asyncio
-import threading
-import time
-from datetime import datetime, timedelta
-from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-import yt_dlp
-import requests
+import tempfile
 import re
+import time
+from datetime import datetime
+from pathlib import Path
+
+import requests
+from bs4 import BeautifulSoup
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+# Load configuration
+CONFIG_FILE = "config.json"
+if os.path.exists(CONFIG_FILE):
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    TOKEN = config.get('telegram_token', '')
+else:
+    print(f"ERROR: Config file {CONFIG_FILE} not found!")
+    sys.exit(1)
+
+if not TOKEN:
+    print("ERROR: Telegram token not found in config!")
+    sys.exit(1)
 
 # Setup logging
+LOG_FILE = config.get('log_file', '/var/log/instagram_bot.log')
+Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('bot.log', encoding='utf-8'),
-        logging.StreamHandler()
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
-class QualityDownloadBot:
+class InstagramBot:
     def __init__(self):
-        self.config = self.load_config()
-        self.token = self.config['telegram']['token']
-        self.admin_ids = self.config['telegram'].get('admin_ids', [])
-        
-        # Bot state
-        self.is_paused = False
-        self.paused_until = None
-        
-        # Create directories
-        self.download_dir = Path(self.config.get('download_dir', 'downloads'))
-        self.download_dir.mkdir(exist_ok=True)
-        
-        # Start auto cleanup
-        self.start_auto_cleanup()
-        
-        logger.info("🤖 Quality Download Bot initialized")
-        print(f"✅ Token: {self.token[:15]}...")
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+        })
+        logger.info("Instagram Bot initialized")
     
-    def load_config(self):
-        """Load configuration"""
-        config_file = 'config.json'
-        if os.path.exists(config_file):
-            with open(config_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+    def extract_shortcode(self, url):
+        """Extract shortcode from Instagram URL"""
+        patterns = [
+            r'(?:https?://)?(?:www\.)?instagram\.com/(?:p|reel|tv)/([a-zA-Z0-9_-]+)',
+            r'(?:https?://)?(?:www\.)?instagr\.am/(?:p|reel|tv)/([a-zA-Z0-9_-]+)'
+        ]
         
-        # Default config
-        config = {
-            'telegram': {
-                'token': 'YOUR_BOT_TOKEN_HERE',
-                'admin_ids': [],
-                'max_file_size': 2000
-            },
-            'download_dir': 'downloads',
-            'auto_cleanup_minutes': 2
-        }
-        
-        with open(config_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=4, ensure_ascii=False)
-        
-        return config
+        for pattern in patterns:
+            match = re.search(pattern, url, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
     
-    def start_auto_cleanup(self):
-        """Start auto cleanup thread"""
-        def cleanup_worker():
-            while True:
-                try:
-                    self.cleanup_old_files()
-                    time.sleep(60)
-                except Exception as e:
-                    logger.error(f"Cleanup error: {e}")
-                    time.sleep(60)
-        
-        thread = threading.Thread(target=cleanup_worker, daemon=True)
-        thread.start()
-        logger.info("🧹 Auto cleanup started")
-    
-    def cleanup_old_files(self):
-        """Cleanup files older than 2 minutes"""
-        cutoff_time = time.time() - (2 * 60)
-        files_deleted = 0
-        
-        for file_path in self.download_dir.glob('*'):
-            if file_path.is_file():
-                file_age = time.time() - file_path.stat().st_mtime
-                if file_age > (2 * 60):
-                    try:
-                        file_path.unlink()
-                        files_deleted += 1
-                    except Exception as e:
-                        logger.error(f"Error deleting {file_path}: {e}")
-        
-        if files_deleted > 0:
-            logger.info(f"Cleaned {files_deleted} old files")
-    
-    def detect_platform(self, url):
-        """Detect platform from URL"""
-        url_lower = url.lower()
-        
-        if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
-            return 'youtube'
-        elif 'instagram.com' in url_lower:
-            return 'instagram'
-        elif 'twitter.com' in url_lower or 'x.com' in url_lower:
-            return 'twitter'
-        elif 'tiktok.com' in url_lower:
-            return 'tiktok'
-        elif 'facebook.com' in url_lower or 'fb.com' in url_lower:
-            return 'facebook'
-        else:
-            return 'generic'
-    
-    async def get_video_formats(self, url):
-        """Get available formats with sizes - FIXED for Twitter/X"""
+    def get_instagram_data(self, url):
+        """Get data from Instagram link"""
         try:
-            is_twitter = 'twitter.com' in url.lower() or 'x.com' in url.lower()
+            logger.info(f"Processing URL: {url}")
             
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-            }
+            # Clean URL
+            if not url.startswith('http'):
+                url = 'https://' + url
             
-            formats = []
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # First get info without downloading
-                info = ydl.extract_info(url, download=False)
-                
-                if 'formats' in info:
-                    for fmt in info['formats']:
-                        # Skip audio-only formats for video selection
-                        if fmt.get('vcodec') == 'none' and fmt.get('acodec') != 'none':
-                            continue
-                        
-                        # Skip formats without filesize
-                        if not fmt.get('filesize') and not fmt.get('filesize_approx'):
-                            continue
-                        
-                        # Get resolution
-                        resolution = fmt.get('resolution', 'N/A')
-                        if resolution == 'audio only':
-                            continue
-                        
-                        # Get format note
-                        format_note = fmt.get('format_note', '')
-                        if not format_note and resolution != 'N/A':
-                            format_note = resolution
-                        
-                        # Special handling for Twitter/X
-                        if is_twitter:
-                            # Try to extract height from format_id or format_note
-                            height = None
-                            if 'height' in fmt:
-                                height = fmt['height']
-                            elif 'height' in fmt.get('format_note', ''):
-                                match = re.search(r'(\d+)p', fmt.get('format_note', ''))
-                                if match:
-                                    height = int(match.group(1))
-                            
-                            if height:
-                                format_note = f"{height}p"
-                            elif 'height' in fmt:
-                                format_note = f"{fmt['height']}p"
-                        
-                        # Calculate file size
-                        filesize = fmt.get('filesize') or fmt.get('filesize_approx')
-                        if filesize:
-                            size_mb = filesize / (1024 * 1024)
-                        else:
-                            # Estimate based on resolution
-                            if 'height' in fmt:
-                                if fmt['height'] >= 1080:
-                                    size_mb = 50
-                                elif fmt['height'] >= 720:
-                                    size_mb = 25
-                                elif fmt['height'] >= 480:
-                                    size_mb = 15
-                                else:
-                                    size_mb = 5
-                            else:
-                                size_mb = 10
-                        
-                        max_size = self.config['telegram']['max_file_size']
-                        
-                        if size_mb > max_size:
-                            continue
-                        
-                        # Create quality label
-                        if is_twitter:
-                            quality_label = f"{format_note} - {size_mb:.1f}MB"
-                        else:
-                            quality_label = f"{format_note} ({resolution}) - {size_mb:.1f}MB"
-                        
-                        # For Twitter, create specific format IDs
-                        if is_twitter:
-                            if 'height' in fmt:
-                                format_id = f"best[height<={fmt['height']}]"
-                            else:
-                                format_id = fmt['format_id']
-                        else:
-                            format_id = fmt['format_id']
-                        
-                        formats.append({
-                            'format_id': format_id,
-                            'resolution': resolution,
-                            'format_note': format_note,
-                            'ext': fmt.get('ext', 'mp4'),
-                            'filesize_mb': round(size_mb, 1),
-                            'quality': quality_label,
-                            'height': fmt.get('height', 0)
-                        })
-                
-                # If no formats found for Twitter, create default options
-                if is_twitter and not formats:
-                    formats = [
-                        {
-                            'format_id': 'best[height<=1080]',
-                            'resolution': '1920x1080',
-                            'format_note': '1080p',
-                            'ext': 'mp4',
-                            'filesize_mb': 50.0,
-                            'quality': '1080p - 50.0MB',
-                            'height': 1080
-                        },
-                        {
-                            'format_id': 'best[height<=720]',
-                            'resolution': '1280x720',
-                            'format_note': '720p',
-                            'ext': 'mp4',
-                            'filesize_mb': 25.0,
-                            'quality': '720p - 25.0MB',
-                            'height': 720
-                        },
-                        {
-                            'format_id': 'best[height<=480]',
-                            'resolution': '854x480',
-                            'format_note': '480p',
-                            'ext': 'mp4',
-                            'filesize_mb': 15.0,
-                            'quality': '480p - 15.0MB',
-                            'height': 480
-                        },
-                        {
-                            'format_id': 'best[height<=360]',
-                            'resolution': '640x360',
-                            'format_note': '360p',
-                            'ext': 'mp4',
-                            'filesize_mb': 8.0,
-                            'quality': '360p - 8.0MB',
-                            'height': 360
-                        }
-                    ]
-                
-                # Sort by quality (highest first)
-                formats.sort(key=lambda x: (-x.get('height', 0), -x['filesize_mb']))
-                
-                # Limit to top 5 formats
-                return formats[:5]
-                
-        except Exception as e:
-            logger.error(f"Error getting formats: {e}")
-            # Return default formats for Twitter on error
-            if 'twitter.com' in url.lower() or 'x.com' in url.lower():
-                return [
-                    {
-                        'format_id': 'best[height<=1080]',
-                        'quality': '1080p - 50.0MB',
-                        'height': 1080
-                    },
-                    {
-                        'format_id': 'best[height<=720]',
-                        'quality': '720p - 25.0MB',
-                        'height': 720
-                    },
-                    {
-                        'format_id': 'best[height<=480]',
-                        'quality': '480p - 15.0MB',
-                        'height': 480
-                    },
-                    {
-                        'format_id': 'best[height<=360]',
-                        'quality': '360p - 8.0MB',
-                        'height': 360
-                    }
-                ]
-            return []
-    
-    def create_quality_keyboard(self, formats, platform):
-        """Create keyboard for quality selection"""
-        keyboard = []
-        
-        if platform in ['youtube', 'twitter'] and formats:
-            platform_icon = '📹' if platform == 'youtube' else '🐦'
-            
-            for fmt in formats:
-                quality_label = fmt['quality']
-                if len(quality_label) > 50:
-                    quality_label = quality_label[:47] + "..."
-                
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"{platform_icon} {quality_label}",
-                        callback_data=f"download_{fmt['format_id']}"
-                    )
-                ])
-            
-            # Add audio option for YouTube only (not for Twitter)
-            if platform == 'youtube':
-                keyboard.append([
-                    InlineKeyboardButton(
-                        "🎵 MP3 Audio Only",
-                        callback_data="download_bestaudio"
-                    )
-                ])
-        
-        else:
-            # Default options if no formats
-            keyboard.append([
-                InlineKeyboardButton("📹 Best Quality", callback_data="download_best")
-            ])
-            keyboard.append([
-                InlineKeyboardButton("📹 720p HD", callback_data="download_720")
-            ])
-            keyboard.append([
-                InlineKeyboardButton("📹 480p SD", callback_data="download_480")
-            ])
-        
-        # Add cancel button
-        keyboard.append([
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel")
-        ])
-        
-        return InlineKeyboardMarkup(keyboard)
-    
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command"""
-        user = update.effective_user
-        
-        if self.is_paused and self.paused_until and datetime.now() < self.paused_until:
-            remaining = self.paused_until - datetime.now()
-            hours = remaining.seconds // 3600
-            minutes = (remaining.seconds % 3600) // 60
-            await update.message.reply_text(
-                f"⏸️ Bot is paused\nWill resume in: {hours}h {minutes}m"
-            )
-            return
-        
-        welcome = f"""
-Hello {user.first_name}! 👋
-
-🤖 **Telegram Download Bot with Quality Selection**
-
-📥 **Supported Platforms:**
-✅ YouTube (choose quality with file size)
-✅ Twitter/X (choose quality with file size) 🐦
-✅ Instagram
-✅ TikTok  
-✅ Facebook
-✅ Direct files (keeps original format)
-
-🎯 **How to use:**
-1. Send YouTube/Twitter link → Choose quality
-2. Send other links → Auto download
-3. Send direct file → Keeps original format
-
-⚡ **Features:**
-• Quality selection for YouTube/Twitter (shows file sizes)
-• Twitter/X support with multiple quality options 🐦
-• Auto cleanup every 2 minutes
-• Pause/Resume bot
-• Preserves file formats
-
-🛠️ **Commands:**
-/start - This menu
-/help - Detailed help
-/status - Bot status (admin)
-/pause [hours] - Pause bot (admin)
-/resume - Resume bot (admin)
-/clean - Clean files (admin)
-
-💡 **Files auto deleted after 2 minutes**
-"""
-        
-        await update.message.reply_text(welcome, parse_mode='Markdown')
-        logger.info(f"User {user.id} started bot")
-    
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages"""
-        if self.is_paused and self.paused_until and datetime.now() < self.paused_until:
-            remaining = self.paused_until - datetime.now()
-            hours = remaining.seconds // 3600
-            minutes = (remaining.seconds % 3600) // 60
-            await update.message.reply_text(
-                f"⏸️ Bot is paused\nWill resume in: {hours}h {minutes}m"
-            )
-            return
-        
-        text = update.message.text
-        user = update.effective_user
-        
-        logger.info(f"Message from {user.first_name}: {text[:50]}")
-        
-        if text.startswith(('http://', 'https://')):
-            platform = self.detect_platform(text)
-            
-            if platform in ['youtube', 'twitter']:
-                platform_display = "YouTube" if platform == 'youtube' else "Twitter/X 🐦"
-                # Show quality selection
-                msg = await update.message.reply_text(f"🔍 Getting available qualities for {platform_display}...")
-                formats = await self.get_video_formats(text)
-                
-                if formats:
-                    info_text = f"📹 **{platform_display} Video**\n\n"
-                    info_text += "🎬 **Available Qualities:**\n"
-                    
-                    for i, fmt in enumerate(formats[:5], 1):
-                        info_text += f"{i}. {fmt['quality']}\n"
-                    
-                    try:
-                        await msg.edit_text(info_text, parse_mode='Markdown')
-                    except:
-                        pass  # Ignore "message not modified" error
-                    
-                    keyboard = self.create_quality_keyboard(formats, platform)
-                    await update.message.reply_text(
-                        "👇 Select quality:",
-                        reply_markup=keyboard
-                    )
-                    
-                    # Save for callback
-                    context.user_data['last_url'] = text
-                    context.user_data['last_platform'] = platform
-                    
-                else:
-                    # Fallback if no formats
-                    await msg.edit_text("📥 Downloading with best quality...")
-                    await self.download_video(update, text, 'best')
-            
-            else:
-                # Other platforms or direct files
-                msg = await update.message.reply_text("📥 Downloading...")
-                await self.process_url(update, text, platform, msg)
-        
-        else:
-            await update.message.reply_text(
-                "Please send a valid URL starting with http:// or https://\n\n"
-                "🌟 **Special:** YouTube/Twitter links show quality options with file sizes!"
-            )
-    
-    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle callback queries - FIXED to avoid 'message not modified' error"""
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        
-        if data == 'cancel':
-            try:
-                await query.edit_message_text("❌ Download cancelled.")
-            except:
-                pass  # Ignore "message not modified" error
-            return
-        
-        if data.startswith('download_'):
-            format_spec = data.replace('download_', '')
-            
-            # Map simple quality names to yt-dlp format
-            if format_spec == '720':
-                format_spec = 'best[height<=720]'
-            elif format_spec == '480':
-                format_spec = 'best[height<=480]'
-            elif format_spec == 'best':
-                format_spec = 'best'
-            elif format_spec == 'bestaudio':
-                format_spec = 'bestaudio'
-            
-            url = context.user_data.get('last_url')
-            if not url:
-                try:
-                    await query.edit_message_text("❌ URL not found!")
-                except:
-                    pass
-                return
-            
-            # Update status message with different text to avoid "not modified" error
-            try:
-                await query.edit_message_text(f"⏳ Starting download...")
-            except:
-                pass  # Ignore if message is the same
-            
-            await self.download_video_callback(query, url, format_spec)
-    
-    async def download_video_callback(self, query, url, format_spec):
-        """Download video from callback query - FIXED VERSION"""
-        try:
-            # Update status with different text
-            try:
-                await query.edit_message_text(f"⏳ Preparing {format_spec}...")
-            except:
-                pass
-            
-            # Create ydl options
-            ydl_opts = {
-                'format': format_spec,
-                'quiet': True,
-                'outtmpl': str(self.download_dir / '%(title).100s.%(ext)s'),
-                'progress_hooks': [lambda d: None],  # Dummy progress hook
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # First update message
-                try:
-                    await query.edit_message_text(f"📥 Downloading {format_spec}...")
-                except:
-                    pass
-                
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                
-                # Fix extension for audio
-                if format_spec == 'bestaudio' and not filename.endswith(('.mp3', '.m4a')):
-                    base_name = os.path.splitext(filename)[0]
-                    filename = f"{base_name}.mp3"
-                
-                if os.path.exists(filename):
-                    file_size = os.path.getsize(filename) / (1024 * 1024)
-                    max_size = self.config['telegram']['max_file_size']
-                    
-                    if file_size > max_size:
-                        os.remove(filename)
-                        try:
-                            await query.edit_message_text(f"❌ File too large: {file_size:.1f}MB")
-                        except:
-                            pass
-                        return
-                    
-                    # Update status with different text
-                    try:
-                        await query.edit_message_text(f"📤 Uploading {file_size:.1f}MB...")
-                    except:
-                        pass
-                    
-                    # Send file
-                    with open(filename, 'rb') as f:
-                        if filename.endswith(('.mp3', '.m4a', '.wav', '.ogg', '.flac')):
-                            await query.message.reply_audio(
-                                audio=f,
-                                caption=f"🎵 {info.get('title', 'Audio')[:50]}\nSize: {file_size:.1f}MB | Format: {format_spec}"
-                            )
-                        else:
-                            await query.message.reply_video(
-                                video=f,
-                                caption=f"📹 {info.get('title', 'Video')[:50]}\nSize: {file_size:.1f}MB | Quality: {format_spec}",
-                                supports_streaming=True
-                            )
-                    
-                    # Final message with different text
-                    try:
-                        await query.edit_message_text(f"✅ Success! Downloaded {file_size:.1f}MB")
-                    except:
-                        pass
-                    
-                    # Schedule deletion
-                    self.schedule_file_deletion(filename)
-                    
-                else:
-                    try:
-                        await query.edit_message_text("❌ File not found after download")
-                    except:
-                        pass
-                        
-        except Exception as e:
-            logger.error(f"Download error: {e}")
-            error_msg = f"❌ Error: {str(e)[:200]}"
-            try:
-                await query.edit_message_text(error_msg)
-            except:
-                pass
-    
-    async def download_video(self, update: Update, url, format_spec, msg=None):
-        """Download video from message"""
-        try:
-            if not msg:
-                msg = await update.message.reply_text("⏳ Starting download...")
-            
-            # Create ydl options
-            ydl_opts = {
-                'format': format_spec,
-                'quiet': True,
-                'outtmpl': str(self.download_dir / '%(title).100s.%(ext)s'),
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                
-                if os.path.exists(filename):
-                    file_size = os.path.getsize(filename) / (1024 * 1024)
-                    max_size = self.config['telegram']['max_file_size']
-                    
-                    if file_size > max_size:
-                        os.remove(filename)
-                        await msg.edit_text(f"❌ File too large: {file_size:.1f}MB")
-                        return
-                    
-                    await msg.edit_text(f"📤 Uploading ({file_size:.1f}MB)...")
-                    
-                    # Send file
-                    with open(filename, 'rb') as f:
-                        if filename.endswith(('.mp3', '.m4a')):
-                            await update.message.reply_audio(
-                                audio=f,
-                                caption=f"🎵 {info.get('title', 'Audio')[:50]}\nSize: {file_size:.1f}MB"
-                            )
-                        else:
-                            await update.message.reply_video(
-                                video=f,
-                                caption=f"📹 {info.get('title', 'Video')[:50]}\nSize: {file_size:.1f}MB",
-                                supports_streaming=True
-                            )
-                    
-                    await msg.edit_text(f"✅ Download complete! ({file_size:.1f}MB)")
-                    
-                    # Schedule deletion
-                    self.schedule_file_deletion(filename)
-                    
-                else:
-                    await msg.edit_text("❌ File not found")
-                        
-        except Exception as e:
-            logger.error(f"Download error: {e}")
-            error_msg = f"❌ Error: {str(e)[:200]}"
-            if msg:
-                await msg.edit_text(error_msg)
-            else:
-                await update.message.reply_text(error_msg)
-    
-    async def process_url(self, update: Update, url, platform, msg):
-        """Process generic URL or direct file"""
-        try:
-            # Try yt-dlp first for media
-            ydl_opts = {
-                'format': 'best',
-                'quiet': True,
-                'outtmpl': str(self.download_dir / '%(title).100s.%(ext)s'),
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                
-                if os.path.exists(filename):
-                    await self.send_file(update, filename, info.get('title', 'File'), msg)
-                else:
-                    # If yt-dlp fails, try direct download
-                    await self.download_direct_file(update, url, msg)
-                    
-        except Exception as e:
-            logger.error(f"yt-dlp error: {e}")
-            # Fallback to direct download
-            await self.download_direct_file(update, url, msg)
-    
-    async def download_direct_file(self, update: Update, url, msg):
-        """Download direct file preserving format"""
-        try:
-            await msg.edit_text("📥 Downloading direct file...")
-            
-            # Get filename
-            filename = os.path.basename(url.split('?')[0])
-            if not filename or '.' not in filename:
-                filename = f"file_{int(time.time())}.mp4"
-            
-            filepath = self.download_dir / filename
-            
-            # Download
-            response = requests.get(url, stream=True, timeout=60)
+            response = self.session.get(url, timeout=15)
             response.raise_for_status()
             
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
+            html = response.text
+            soup = BeautifulSoup(html, 'html.parser')
             
-            with open(filepath, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
+            # Extract data
+            data = {
+                'url': url,
+                'timestamp': datetime.now().isoformat(),
+                'status_code': response.status_code,
+                'content_length': len(html),
+                'success': True
+            }
             
-            file_size = os.path.getsize(filepath) / (1024 * 1024)
-            max_size = self.config['telegram']['max_file_size']
+            # Extract shortcode
+            shortcode = self.extract_shortcode(url)
+            if shortcode:
+                data['shortcode'] = shortcode
+                data['instagram_url'] = f"https://www.instagram.com/p/{shortcode}/"
             
-            if file_size > max_size:
-                os.remove(filepath)
-                await msg.edit_text(f"❌ File too large: {file_size:.1f}MB")
-                return
+            # Extract title
+            title_tag = soup.find('title')
+            if title_tag:
+                data['title'] = title_tag.text.strip()
             
-            # Send with correct method
-            await self.send_file(update, str(filepath), filename, msg)
+            # Extract meta description
+            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            if meta_desc and meta_desc.get('content'):
+                data['description'] = meta_desc['content']
             
-            # Schedule deletion
-            self.schedule_file_deletion(str(filepath))
+            # Extract Open Graph data
+            og_title = soup.find('meta', property='og:title')
+            if og_title and og_title.get('content'):
+                data['og_title'] = og_title['content']
+            
+            og_desc = soup.find('meta', property='og:description')
+            if og_desc and og_desc.get('content'):
+                data['og_description'] = og_desc['content']
+            
+            og_image = soup.find('meta', property='og:image')
+            if og_image and og_image.get('content'):
+                data['og_image'] = og_image['content']
+            
+            # Extract text content
+            for script in soup(["script", "style", "noscript"]):
+                script.decompose()
+            
+            text = soup.get_text(separator='\n', strip=True)
+            lines = [line for line in text.split('\n') if line.strip()]
+            data['text_content'] = '\n'.join(lines[:20])  # First 20 lines
+            
+            # Extract mentions and hashtags
+            all_text = ' '.join(lines)
+            mentions = re.findall(r'@([a-zA-Z0-9_.]+)', all_text)
+            hashtags = re.findall(r'#([a-zA-Z0-9_]+)', all_text)
+            
+            if mentions:
+                data['mentions'] = list(set(mentions))[:10]
+            if hashtags:
+                data['hashtags'] = list(set(hashtags))[:10]
+            
+            logger.info(f"Successfully extracted data from {url}")
+            return data
             
         except Exception as e:
-            logger.error(f"Direct download error: {e}")
-            await msg.edit_text(f"❌ Download error: {str(e)[:100]}")
+            logger.error(f"Error extracting data: {e}")
+            return {
+                'success': False,
+                'url': url,
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
+
+# Create bot instance
+bot = InstagramBot()
+
+# Telegram handlers
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    welcome_text = """
+🤖 *Instagram Telegram Bot*
+
+ارسال کنید: لینک اینستاگرام
+دریافت کنید: فایل JSON
+
+🎯 *نحوه استفاده:*
+1. لینک اینستاگرام را کپی کنید
+2. برای ربات ارسال کنید
+3. فایل JSON دریافت کنید
+
+🔗 *مثال لینک:*
+• https://www.instagram.com/p/ABC123/
+• https://instagram.com/reel/XYZ456/
+• https://instagram.com/tv/DEF789/
+
+📊 *اطلاعات استخراج شده:*
+• متن و توضیحات پست
+• اطلاعات متا
+• منشن‌ها و هشتگ‌ها
+• لینک‌های تصویر
+
+💡 *توجه:* فقط پست‌های عمومی قابل استخراج هستند.
+"""
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+    logger.info(f"User {update.effective_user.id} started the bot")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help command"""
+    help_text = """
+📖 *راهنمای استفاده*
+
+*چه لینک‌هایی پشتیبانی می‌شود:*
+✅ پست عکس: instagram.com/p/...
+✅ رییل: instagram.com/reel/...
+✅ ویدیو: instagram.com/tv/...
+
+*چه اطلاعاتی استخراج می‌شود:*
+• متن اصلی پست
+• توضیحات متا
+• لینک تصویر اصلی
+• منشن‌ها و هشتگ‌ها
+• اطلاعات فنی
+
+*اگر خطا دریافت کردید:*
+1. مطمئن شوید لینک درست است
+2. اطمینان حاصل کنید پست عمومی است
+3. اینترنت سرور را چک کنید
+4. دوباره امتحان کنید
+
+*برای شروع:* یک لینک اینستاگرام ارسال کنید!
+"""
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming messages"""
+    user_id = update.effective_user.id
+    user_text = update.message.text.strip()
     
-    async def send_file(self, update: Update, filepath, title, msg):
-        """Send file with appropriate method"""
-        try:
-            file_size = os.path.getsize(filepath) / (1024 * 1024)
-            
-            await msg.edit_text(f"📤 Uploading ({file_size:.1f}MB)...")
-            
-            with open(filepath, 'rb') as f:
-                if filepath.endswith(('.mp3', '.m4a', '.wav', '.ogg', '.flac')):
-                    await update.message.reply_audio(
-                        audio=f,
-                        caption=f"🎵 {title[:50]}\nSize: {file_size:.1f}MB"
-                    )
-                elif filepath.endswith(('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv')):
-                    await update.message.reply_video(
-                        video=f,
-                        caption=f"📹 {title[:50]}\nSize: {file_size:.1f}MB",
-                        supports_streaming=True
-                    )
-                elif filepath.endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')):
-                    await update.message.reply_photo(
-                        photo=f,
-                        caption=f"🖼️ {title[:50]}\nSize: {file_size:.1f}MB"
-                    )
-                else:
-                    await update.message.reply_document(
-                        document=f,
-                        caption=f"📄 {title[:50]}\nSize: {file_size:.1f}MB"
-                    )
-            
-            await msg.edit_text(f"✅ Download complete! ({file_size:.1f}MB)")
-            
-        except Exception as e:
-            logger.error(f"Send file error: {e}")
-            await msg.edit_text(f"❌ Upload error: {str(e)[:100]}")
+    logger.info(f"User {user_id} sent: {user_text[:50]}")
     
-    def schedule_file_deletion(self, filepath):
-        """Schedule file deletion after 2 minutes"""
-        def delete_later():
-            time.sleep(120)
-            if os.path.exists(filepath):
-                try:
-                    os.remove(filepath)
-                    logger.info(f"Auto deleted: {os.path.basename(filepath)}")
-                except Exception as e:
-                    logger.error(f"Delete error: {e}")
-        
-        threading.Thread(target=delete_later, daemon=True).start()
-    
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Check if it's an Instagram link
+    if not ('instagram.com' in user_text or 'instagr.am' in user_text):
         await update.message.reply_text(
-            "📖 **Help**\n\n"
-            "Send YouTube link → Choose quality with file size\n"
-            "Send Twitter/X link → Choose quality with file size 🐦\n"
-            "Send other links → Auto download\n"
-            "Files auto deleted after 2 minutes",
+            "❌ *لینک اینستاگرام نیست*\n\n"
+            "لطفاً فقط لینک اینستاگرام ارسال کنید.\n"
+            "مثال: https://www.instagram.com/p/ABC123/",
             parse_mode='Markdown'
         )
+        return
     
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        if user.id not in self.admin_ids:
-            await update.message.reply_text("⛔ Admin only!")
+    # Send processing message
+    msg = await update.message.reply_text("⏳ *در حال پردازش لینک...*", parse_mode='Markdown')
+    
+    try:
+        # Get data from Instagram
+        data = bot.get_instagram_data(user_text)
+        
+        if not data.get('success', False):
+            error_msg = data.get('error', 'Unknown error')
+            await msg.edit_text(
+                f"❌ *خطا در استخراج اطلاعات*\n\n"
+                f"خطا: {error_msg[:100]}\n\n"
+                f"لطفاً لینک را بررسی کنید و دوباره امتحان کنید.",
+                parse_mode='Markdown'
+            )
             return
         
-        files = list(self.download_dir.glob('*'))
-        total_size = sum(f.stat().st_size for f in files if f.is_file()) / (1024 * 1024)
+        # Create JSON file
+        json_str = json.dumps(data, indent=2, ensure_ascii=False, default=str)
         
-        await update.message.reply_text(
-            f"📊 **Status**\n\n"
-            f"✅ Bot active\n"
-            f"📁 Files: {len(files)}\n"
-            f"💾 Size: {total_size:.1f}MB\n"
-            f"👤 Your ID: {user.id}",
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+            f.write(json_str)
+            temp_file = f.name
+        
+        # Determine filename
+        shortcode = data.get('shortcode', 'instagram')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"instagram_{shortcode}_{timestamp}.json"
+        
+        # Send file
+        with open(temp_file, 'rb') as file:
+            await update.message.reply_document(
+                document=file,
+                filename=filename,
+                caption=f"📁 *فایل اطلاعات اینستاگرام*\n\n"
+                       f"🔗 لینک: {data['url'][:50]}...\n"
+                       f"🕐 زمان: {datetime.now().strftime('%H:%M:%S')}\n"
+                       f"📊 حجم داده: {len(json_str):,} کاراکتر",
+                parse_mode='Markdown'
+            )
+        
+        # Cleanup temp file
+        os.unlink(temp_file)
+        
+        # Send success message
+        await msg.edit_text(
+            f"✅ *فایل ارسال شد!*\n\n"
+            f"📊 *خلاصه اطلاعات:*\n"
+            f"• کد پست: {data.get('shortcode', 'نامشخص')}\n"
+            f"• عنوان: {data.get('title', data.get('og_title', 'نامشخص'))[:50]}...\n"
+            f"• توضیحات: {len(data.get('description', data.get('og_description', '')))} کاراکتر\n"
+            f"• منشن‌ها: {len(data.get('mentions', []))}\n"
+            f"• هشتگ‌ها: {len(data.get('hashtags', []))}\n\n"
+            f"📁 فایل JSON شامل تمام اطلاعات است.",
             parse_mode='Markdown'
         )
-    
-    async def pause_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        if user.id not in self.admin_ids:
-            await update.message.reply_text("⛔ Admin only!")
-            return
         
-        hours = 1
-        if context.args:
-            try:
-                hours = int(context.args[0])
-            except:
-                hours = 1
+        logger.info(f"Successfully sent file for user {user_id}")
         
-        self.is_paused = True
-        self.paused_until = datetime.now() + timedelta(hours=hours)
-        
-        await update.message.reply_text(
-            f"⏸️ Bot paused for {hours} hour(s)\n"
-            f"Resume at: {self.paused_until.strftime('%H:%M')}"
+    except Exception as e:
+        logger.error(f"Error in handle_message: {e}", exc_info=True)
+        await msg.edit_text(
+            f"❌ *خطای غیرمنتظره*\n\n"
+            f"خطا: {str(e)[:100]}\n\n"
+            f"لطفاً دوباره امتحان کنید.",
+            parse_mode='Markdown'
         )
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle errors"""
+    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
     
-    async def resume_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        if user.id not in self.admin_ids:
-            await update.message.reply_text("⛔ Admin only!")
-            return
-        
-        self.is_paused = False
-        self.paused_until = None
-        await update.message.reply_text("▶️ Bot resumed!")
-    
-    async def clean_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        if user.id not in self.admin_ids:
-            await update.message.reply_text("⛔ Admin only!")
-            return
-        
-        files = list(self.download_dir.glob('*'))
-        count = len(files)
-        
-        for f in files:
-            try:
-                f.unlink()
-            except:
-                pass
-        
-        await update.message.reply_text(f"🧹 Cleaned {count} files")
-    
-    def run(self):
-        """Run the bot"""
-        print("=" * 50)
-        print("🤖 Telegram Bot with Quality Selection")
-        print("=" * 50)
-        
-        if not self.token or self.token == 'YOUR_BOT_TOKEN_HERE':
-            print("❌ ERROR: Configure token in config.json")
-            print("Edit: nano /opt/quality-tg-bot/config.json")
-            return
-        
-        print(f"✅ Token: {self.token[:15]}...")
-        
-        app = Application.builder().token(self.token).build()
-        
-        app.add_handler(CommandHandler("start", self.start_command))
-        app.add_handler(CommandHandler("help", self.help_command))
-        app.add_handler(CommandHandler("status", self.status_command))
-        app.add_handler(CommandHandler("pause", self.pause_command))
-        app.add_handler(CommandHandler("resume", self.resume_command))
-        app.add_handler(CommandHandler("clean", self.clean_command))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-        app.add_handler(CallbackQueryHandler(self.handle_callback))
-        
-        print("✅ Bot ready!")
-        print("📱 Send YouTube/Twitter link to test quality selection")
-        print("=" * 50)
-        
-        app.run_polling()
+    try:
+        await update.message.reply_text(
+            "❌ *خطا در پردازش*\n\n"
+            "یک خطای غیرمنتظره رخ داده است.\n"
+            "لطفاً دوباره امتحان کنید."
+        )
+    except:
+        pass
 
 def main():
-    try:
-        bot = QualityDownloadBot()
-        bot.run()
-    except KeyboardInterrupt:
-        print("\n🛑 Bot stopped")
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-
-if __name__ == '__main__':
-    main()
-BOTPYEOF
-
-# Step 6: Create config.json
-print_blue "6. Creating config.json..."
-cat > config.json << 'CONFIGEOF'
-{
-    "telegram": {
-        "token": "YOUR_BOT_TOKEN_HERE",
-        "admin_ids": [],
-        "max_file_size": 2000
-    },
-    "download_dir": "downloads",
-    "auto_cleanup_minutes": 2
-}
-CONFIGEOF
-
-# Step 7: Create management script
-print_blue "7. Creating management script..."
-cat > manage.sh << 'MANAGEEOF'
-#!/bin/bash
-# manage.sh - Quality bot management
-
-INSTALL_DIR="/opt/quality-tg-bot"
-cd "$INSTALL_DIR"
-
-case "$1" in
-    start)
-        echo "🚀 Starting Quality Bot..."
-        source venv/bin/activate
-        > bot.log
-        nohup python bot.py >> bot.log 2>&1 &
-        echo $! > bot.pid
-        echo "✅ Bot started (PID: \$(cat bot.pid))"
-        echo "📝 Logs: tail -f \$INSTALL_DIR/bot.log"
-        echo ""
-        echo "🎯 Features:"
-        echo "   • Quality selection for YouTube/Twitter"
-        echo "   • Shows file sizes for each quality"
-        echo "   • Twitter/X support with multiple qualities 🐦"
-        echo "   • Preserves original file formats"
-        echo "   • Auto cleanup every 2 minutes"
-        ;;
-    stop)
-        echo "🛑 Stopping bot..."
-        if [ -f "bot.pid" ]; then
-            kill \$(cat bot.pid) 2>/dev/null
-            rm -f bot.pid
-            echo "✅ Bot stopped"
-        else
-            echo "⚠️ Bot not running"
-        fi
-        ;;
-    restart)
-        echo "🔄 Restarting..."
-        ./manage.sh stop
-        sleep 2
-        ./manage.sh start
-        ;;
-    status)
-        echo "📊 Bot Status:"
-        if [ -f "bot.pid" ] && ps -p \$(cat bot.pid) > /dev/null 2>&1; then
-            echo "✅ Bot running (PID: \$(cat bot.pid))"
-            echo "📝 Recent logs:"
-            tail -5 bot.log 2>/dev/null || echo "No logs"
-        else
-            echo "❌ Bot not running"
-            [ -f "bot.pid" ] && rm -f bot.pid
-        fi
-        ;;
-    logs)
-        echo "📝 Bot logs:"
-        if [ -f "bot.log" ]; then
-            if [ "$2" = "-f" ]; then
-                tail -f bot.log
-            else
-                tail -50 bot.log
-            fi
-        else
-            echo "No log file"
-        fi
-        ;;
-    config)
-        echo "⚙️ Editing config..."
-        nano config.json
-        echo "💡 Restart after editing: ./manage.sh restart"
-        ;;
-    test)
-        echo "🔍 Testing..."
-        source venv/bin/activate
-        
-        echo "1. Testing imports..."
-        python3 -c "
-try:
-    import telegram, yt_dlp, requests
-    print('✅ All imports OK')
-except Exception as e:
-    print(f'❌ Import error: {e}')
-"
-        
-        echo ""
-        echo "2. Testing config..."
-        python3 -c "
-import json
-try:
-    with open('config.json') as f:
-        config = json.load(f)
+    """Main function to run the bot"""
+    print("=" * 50)
+    print("🤖 Instagram Telegram Bot")
+    print("=" * 50)
+    print(f"Token: {TOKEN[:10]}...")
+    print(f"Log file: {LOG_FILE}")
+    print("=" * 50)
     
-    token = config['telegram']['token']
-    if token == 'YOUR_BOT_TOKEN_HERE':
-        print('❌ Token not configured!')
+    try:
+        # Create application
+        application = Application.builder().token(TOKEN).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # Add error handler
+        application.add_error_handler(error_handler)
+        
+        # Start bot
+        print("✅ Bot is starting...")
+        print("📱 Open Telegram and send /start to your bot")
+        print("🛑 Press Ctrl+C to stop")
+        print("=" * 50)
+        
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}", exc_info=True)
+        print(f"❌ Failed to start bot: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+EOF
+
+# Step 8: Create startup script
+print_info "Step 8: Creating startup script..."
+cat > start.sh << 'EOF'
+#!/bin/bash
+# Startup script for Instagram Bot
+
+cd "$(dirname "$0")"
+
+# Activate virtual environment
+source venv/bin/activate
+
+# Run the bot
+python3 bot.py
+EOF
+
+chmod +x start.sh bot.py
+
+# Step 9: Create systemd service
+print_info "Step 9: Creating systemd service..."
+cat > instagram-bot.service << EOF
+[Unit]
+Description=Instagram Telegram Bot
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$INSTALL_DIR
+Environment="PATH=$INSTALL_DIR/venv/bin"
+ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/bot.py
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=instagram-bot
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Install the service
+$SUDO cp instagram-bot.service /etc/systemd/system/
+$SUDO systemctl daemon-reload
+$SUDO systemctl enable instagram-bot.service
+
+# Step 10: Start the service
+print_info "Step 10: Starting bot service..."
+$SUDO systemctl start instagram-bot.service
+
+# Wait a moment and check status
+sleep 3
+
+# Step 11: Verify installation
+print_info "Step 11: Verifying installation..."
+SERVICE_STATUS=$($SUDO systemctl is-active instagram-bot.service)
+
+if [ "$SERVICE_STATUS" = "active" ]; then
+    print_success "✅ Bot service is running successfully!"
+else
+    print_error "❌ Service failed to start!"
+    echo ""
+    echo "Checking logs..."
+    $SUDO journalctl -u instagram-bot.service --no-pager -n 20
+    echo ""
+    print_info "Trying to start manually for debugging..."
+    cd $INSTALL_DIR
+    source venv/bin/activate
+    python3 bot.py || echo "Manual start failed"
+fi
+
+# Step 12: Final instructions
+echo ""
+echo "=========================================="
+echo "✅ INSTALLATION COMPLETE!"
+echo "=========================================="
+echo ""
+echo "📁 Installation directory: $INSTALL_DIR"
+echo "⚙️ Configuration file: $INSTALL_DIR/config.json"
+echo "🤖 Bot file: $INSTALL_DIR/bot.py"
+echo "📊 Log file: /var/log/instagram_bot.log"
+echo ""
+echo "🔧 Management commands:"
+echo "  sudo systemctl status instagram-bot"
+echo "  sudo systemctl restart instagram-bot"
+echo "  sudo systemctl stop instagram-bot"
+echo "  sudo journalctl -u instagram-bot -f"
+echo ""
+echo "🤖 Telegram usage:"
+echo "1. Open Telegram"
+echo "2. Search for your bot (ask @BotFather for username)"
+echo "3. Send /start command"
+echo "4. Send any Instagram link"
+echo "5. Receive JSON file with all data"
+echo ""
+echo "🔗 Example Instagram links:"
+echo "  https://www.instagram.com/p/CvC9FkHNrJI/"
+echo "  https://instagram.com/reel/Cxample123/"
+echo "  https://instagram.com/tv/ABC123DEF/"
+echo ""
+echo "💡 Tip: You can edit config.json to add admin IDs:"
+echo '  "admin_ids": [YOUR_TELEGRAM_ID]'
+echo ""
+echo "=========================================="
+echo "Need help? Check logs:"
+echo "sudo journalctl -u instagram-bot -n 50"
+echo "=========================================="
+
+# Test the bot token
+echo ""
+print_info "Testing bot connection..."
+sleep 2
+curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getMe" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if data.get('ok'):
+        print('✅ Bot is connected to Telegram!')
+        print(f'   Bot username: @{data[\"result\"][\"username\"]}')
+        print(f'   Bot name: {data[\"result\"][\"first_name\"]}')
     else:
-        print(f'✅ Token: {token[:15]}...')
-        print(f'✅ Max size: {config[\"telegram\"][\"max_file_size\"]}MB')
+        print('❌ Bot connection failed!')
+        print(f'   Error: {data.get(\"description\", \"Unknown error\")}')
 except Exception as e:
-    print(f'❌ Config error: {e}')
+    print(f'❌ Test error: {e}')
 "
-        ;;
-    debug)
-        echo "🐛 Debug mode..."
-        ./manage.sh stop
-        sleep 1
-        source venv/bin/activate
-        python bot.py
-        ;;
-    clean)
-        echo "🧹 Cleaning..."
-        rm -rf downloads/*
-        echo "✅ Files cleaned"
-        ;;
-    uninstall)
-        echo "🗑️ Uninstalling..."
-        echo ""
-        read -p "Are you sure? Type 'YES': " confirm
-        if [ "$confirm" = "YES" ]; then
-            ./manage.sh stop
-            cd /
-            rm -rf "$INSTALL_DIR"
-            echo "✅ Bot uninstalled"
-        else
-            echo "❌ Cancelled"
-        fi
-        ;;
-    autostart)
-        echo "⚙️ Setting auto-start..."
-        (crontab -l 2>/dev/null | grep -v "$INSTALL_DIR"; 
-         echo "@reboot cd $INSTALL_DIR && ./manage.sh start") | crontab -
-        echo "✅ Auto-start configured"
-        ;;
-    update)
-        echo "🔄 Updating from GitHub..."
-        cd /tmp
-        curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/quality_install.sh -o update.sh
-        bash update.sh
-        ;;
-    *)
-        echo "🤖 Quality Download Bot Management"
-        echo "================================="
-        echo ""
-        echo "📁 Directory: $INSTALL_DIR"
-        echo ""
-        echo "📋 Commands:"
-        echo "  ./manage.sh start      # Start bot"
-        echo "  ./manage.sh stop       # Stop bot"
-        echo "  ./manage.sh restart    # Restart bot"
-        echo "  ./manage.sh status     # Check status"
-        echo "  ./manage.sh logs       # View logs"
-        echo "  ./manage.sh config     # Edit config"
-        echo "  ./manage.sh test       # Test everything"
-        echo "  ./manage.sh debug      # Debug mode"
-        echo "  ./manage.sh clean      # Clean files"
-        echo "  ./manage.sh uninstall  # Uninstall bot"
-        echo "  ./manage.sh autostart  # Auto-start on reboot"
-        echo "  ./manage.sh update     # Update from GitHub"
-        echo ""
-        echo "🎯 Features:"
-        echo "  • Quality selection for YouTube/Twitter"
-        echo "  • Shows file sizes for each quality"
-        echo "  • Twitter/X support with multiple qualities 🐦"
-        echo "  • Preserves original formats"
-        echo "  • Auto cleanup (2 minutes)"
-        echo "  • Pause/Resume functionality"
-        ;;
-esac
-MANAGEEOF
-
-chmod +x manage.sh
-
-# Step 8: Create requirements.txt
-print_blue "8. Creating requirements.txt..."
-cat > requirements.txt << 'REQEOF'
-python-telegram-bot==20.7
-yt-dlp==2025.11.12
-requests==2.32.5
-REQEOF
-
-print_green "✅ QUALITY BOT INSTALLATION COMPLETE!"
 echo ""
-echo "📋 SETUP STEPS:"
-echo "================"
-echo "1. Configure bot:"
-echo "   cd $INSTALL_DIR"
-echo "   nano config.json"
-echo "   • Replace YOUR_BOT_TOKEN_HERE with your token"
-echo "   • Add your Telegram ID to admin_ids"
-echo ""
-echo "2. Start bot:"
-echo "   ./manage.sh start"
-echo ""
-echo "3. Test:"
-echo "   ./manage.sh test"
-echo "   ./manage.sh status"
-echo ""
-echo "4. In Telegram:"
-echo "   • Find your bot"
-echo "   • Send /start"
-echo "   • Send YouTube link → Choose quality with file size"
-echo "   • Send Twitter/X link → Choose quality with file size 🐦"
-echo "   • Send direct file → Keeps original format"
-echo ""
-echo "🔧 Troubleshooting:"
-echo "   ./manage.sh logs     # Check errors"
-echo "   ./manage.sh debug    # Run in foreground"
-echo "   ./manage.sh update   # Update to latest version"
-echo ""
-echo "🚀 Install command for others:"
-echo "bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/quality_install.sh)"
