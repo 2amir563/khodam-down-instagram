@@ -7,15 +7,24 @@ echo "---"
 # Get Bot Token from user
 read -p "Please enter your Telegram bot token (e.g., 123456:ABC-DEF): " BOT_TOKEN
 
-# --- Section 2: Install Prerequisites ---
+# --- Section 2: Install Prerequisites and VENV Setup ---
 echo "---"
-echo "🛠️ Installing system prerequisites (Python3, pip, git)..."
+echo "🛠️ Installing system prerequisites (Python3, pip, venv, git)..."
 
-# Install Python3 and pip (compatible with Debian/Ubuntu)
+# Install Python3, pip, and venv utility (compatible with Debian/Ubuntu)
 sudo apt update > /dev/null 2>&1
-sudo apt install -y python3 python3-pip git > /dev/null 2>&1
+sudo apt install -y python3 python3-pip python3-venv git > /dev/null 2>&1
 
-# --- Section 3: Create and Configure Python File ---
+# Create and activate a virtual environment (VENV) for reliable dependency handling
+echo "⚙️ Setting up virtual environment..."
+python3 -m venv bot_env
+source bot_env/bin/activate
+
+# --- Section 3: Install Libraries inside VENV ---
+echo "📚 Installing Python libraries (instaloader and python-telegram-bot) inside VENV..."
+pip install instaloader python-telegram-bot > /dev/null 2>&1
+
+# --- Section 4: Create and Configure Python File ---
 PYTHON_SCRIPT_NAME="instabot_downloader.py"
 echo "🐍 Creating bot file ($PYTHON_SCRIPT_NAME) and injecting token..."
 
@@ -37,8 +46,7 @@ def handle_message(update, context):
     text = update.message.text
     chat_id = update.message.chat_id
     
-    # SECURITY NOTE: Access control has been REMOVED as requested by the user.
-    # The bot will now respond to all users.
+    # The bot will respond to all users.
 
     match = re.search(URL_REGEX, text)
     if not match:
@@ -102,20 +110,19 @@ if __name__ == '__main__':
     main()
 EOF
 
-# --- Section 4: Install Libraries ---
-echo "📚 Installing Python libraries (instaloader and python-telegram-bot)..."
-pip3 install instaloader python-telegram-bot --break-system-packages > /dev/null 2>&1
-
 # --- Section 5: Run the Bot ---
 echo "---"
-echo "🚀 Running the bot in the background using nohup..."
+echo "🚀 Running the bot inside the VENV in the background..."
 
-# Run the bot with nohup to keep it alive after terminal closure. Output redirected to bot.log.
-nohup python3 $PYTHON_SCRIPT_NAME > bot.log 2>&1 &
+# Run the bot using the specific Python interpreter inside the VENV
+nohup ./bot_env/bin/python $PYTHON_SCRIPT_NAME > bot.log 2>&1 &
+
+# Deactivate the shell environment
+deactivate 2>/dev/null
 
 echo "---"
 echo "✅ **Bot successfully installed and running.**"
-echo "The bot is now public and will respond to all users."
+echo "The bot is now public and should respond to all users."
 echo "---"
 echo "📜 Useful Commands:"
 echo "* To view logs: 'tail -f bot.log'"
