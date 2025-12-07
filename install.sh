@@ -1,192 +1,68 @@
-#!/bin/bash
-
-# Simple Instagram Telegram Bot Installer
-# For fresh Linux servers
-# Run as root
-
-echo "=========================================="
-echo "Simple Instagram Bot Installer"
-echo "=========================================="
-
-# Update system
-apt-get update
-apt-get upgrade -y
-
-# Install Python
-apt-get install -y python3 python3-pip python3-venv git
-
-# Create directory
-mkdir -p /opt/instagram_bot
-cd /opt/instagram_bot
-
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install requirements
-pip install python-telegram-bot instaloader
-
-# Create .env file
-echo "Please enter your Telegram Bot Token from @BotFather:"
-read -p "Token: " BOT_TOKEN
-
-echo "TELEGRAM_BOT_TOKEN=$BOT_TOKEN" > .env
-
-# Create bot.py
-cat > bot.py << 'EOF'
 #!/usr/bin/env python3
 import os
-import sys
-import logging
+import re
 import json
-import tempfile
+import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import instaloader
 
-# Setup logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Get token
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-if not TOKEN:
-    print("ERROR: Bot token not found!")
-    print("Please set TELEGRAM_BOT_TOKEN environment variable")
-    sys.exit(1)
-
-# Initialize instaloader
-loader = instaloader.Instaloader(quiet=True)
+TOKEN = "8502213708:AAud0o3wEjhWKNPqXjY5AoNIi6fEQiL4tf4"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Send me an Instagram link (post/reel/video) and I'll extract the content for you!")
+    await update.message.reply_text("🤖 Send me an Instagram link!")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📖 Just send me any Instagram link and I'll extract the text and information.")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text
     
-    # Check if it's an Instagram link
-    if 'instagram.com' not in text and 'instagr.am' not in text:
-        await update.message.reply_text("❌ Please send a valid Instagram link")
+    if "instagram.com" not in url:
+        await update.message.reply_text("❌ Please send an Instagram link")
         return
     
     await update.message.reply_text("⏳ Processing...")
     
     try:
-        # Extract shortcode
-        import re
-        match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/]+)', text)
-        if not match:
-            await update.message.reply_text("❌ Could not extract post ID from link")
-            return
-        
-        shortcode = match.group(1)
-        
-        # Get post
-        post = instaloader.Post.from_shortcode(loader.context, shortcode)
-        
-        # Prepare data
-        data = {
-            'url': f"https://instagram.com/p/{shortcode}",
-            'username': post.owner_username,
-            'caption': post.caption if post.caption else "No caption",
-            'likes': post.likes,
-            'comments': post.comments,
-            'is_video': post.is_video,
-            'timestamp': str(post.date_utc) if hasattr(post, 'date_utc') else None
+        # Method 1: Try to get basic info from page
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         
-        # Send response
-        response = f"""
-📷 Instagram Post Info:
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        # Extract title
+        import re
+        title_match = re.search(r'<title>(.*?)</title>', response.text)
+        title = title_match.group(1) if title_match else "No title"
+        
+        # Extract description
+        desc_match = re.search(r'"caption":"(.*?)"', response.text)
+        description = desc_match.group(1) if desc_match else "No description"
+        
+        # Clean up text
+        if '\\u' in description:
+            description = description.encode().decode('unicode_escape')
+        
+        # Prepare response
+        response_text = f"""
+📷 Instagram Link Info:
 
-👤 Username: @{data['username']}
-❤️ Likes: {data['likes']}
-💬 Comments: {data['comments']}
-🎥 Video: {'Yes' if data['is_video'] else 'No'}
-📅 Date: {data['timestamp']}
+🔗 URL: {url}
+📌 Title: {title}
 
-📝 Caption:
-{data['caption']}
+📝 Content:
+{description[:1000] + '...' if len(description) > 1000 else description}
         """
         
-        await update.message.reply_text(response)
-        
-        # Send JSON file
-        json_data = json.dumps(data, indent=2)
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            f.write(json_data)
-            temp_file = f.name
-        
-        with open(temp_file, 'rb') as file:
-            await update.message.reply_document(
-                document=file,
-                filename=f"instagram_{shortcode}.json",
-                caption="📁 JSON file with all data"
-            )
-        
-        os.unlink(temp_file)
+        await update.message.reply_text(response_text)
         
     except Exception as e:
-        logger.error(f"Error: {e}")
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 def main():
-    # Create application
-    application = Application.builder().token(TOKEN).build()
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Start bot
-    print("Starting bot...")
-    application.run_polling()
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+    print("Bot starting...")
+    app.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-EOF
-
-# Make executable
-chmod +x bot.py
-
-# Create systemd service
-cat > /etc/systemd/system/instagram-bot.service << EOF
-[Unit]
-Description=Instagram Telegram Bot
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/instagram_bot
-Environment="PATH=/opt/instagram_bot/venv/bin"
-EnvironmentFile=/opt/instagram_bot/.env
-ExecStart=/opt/instagram_bot/venv/bin/python3 /opt/instagram_bot/bot.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Enable and start service
-systemctl daemon-reload
-systemctl enable instagram-bot
-systemctl start instagram-bot
-
-echo ""
-echo "=========================================="
-echo "✅ Installation Complete!"
-echo "=========================================="
-echo ""
-echo "Check status: systemctl status instagram-bot"
-echo "View logs: journalctl -u instagram-bot -f"
-echo ""
-echo "Go to Telegram and send /start to your bot!"
