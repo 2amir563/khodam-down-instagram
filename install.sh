@@ -1,8 +1,12 @@
 #!/bin/bash
 
-# --- Section 1: Configuration ---
-echo "## 🤖 Instagram Downloader Bot (With Caption) - Auto Setup (V20+ Fix) ##"
+# --- Section 1: Pre-cleanup and Configuration ---
+echo "## 🤖 Instagram Downloader Bot (Instaloader Fix) ##"
 echo "---"
+
+echo "🗑️ Cleaning up previous installations and stopping old bot..."
+pkill -f python3 instabot_downloader.py 2>/dev/null
+rm -rf bot_env instabot_downloader.py bot.log downloads 2>/dev/null
 
 # Get Bot Token from user
 read -p "Please enter your Telegram bot token (e.g., 123456:ABC-DEF): " BOT_TOKEN
@@ -11,11 +15,11 @@ read -p "Please enter your Telegram bot token (e.g., 123456:ABC-DEF): " BOT_TOKE
 echo "---"
 echo "🛠️ Installing system prerequisites (Python3, pip, venv, dev tools)..."
 
-# Install Python3, pip, venv and dev tools for compilation (improving instaloader robustness)
+# Install Python3, pip, venv and dev tools for compilation
 sudo apt update > /dev/null 2>&1
 sudo apt install -y python3 python3-pip python3-venv git python3-dev > /dev/null 2>&1
 
-# Create and activate a virtual environment (VENV) for reliable dependency handling
+# Create and activate a virtual environment (VENV)
 echo "⚙️ Setting up virtual environment..."
 python3 -m venv bot_env
 source bot_env/bin/activate
@@ -24,11 +28,11 @@ source bot_env/bin/activate
 echo "📚 Installing Python libraries (instaloader and python-telegram-bot) inside VENV..."
 pip install instaloader python-telegram-bot > /dev/null 2>&1
 
-# --- Section 4: Create and Configure Python File ---
+# --- Section 4: Create and Configure Python File (Instaloader FIX applied) ---
 PYTHON_SCRIPT_NAME="instabot_downloader.py"
 echo "🐍 Creating bot file ($PYTHON_SCRIPT_NAME) and injecting token..."
 
-# Full Python bot content using V20+ structure and async handlers
+# Full Python bot content using V20+ structure and the new Instaloader method
 cat << EOF > $PYTHON_SCRIPT_NAME
 import telegram
 from telegram.ext import Application, MessageHandler, filters
@@ -41,6 +45,7 @@ import re
 TOKEN = "$BOT_TOKEN"
 
 L = instaloader.Instaloader(compress_json=False, quiet=True)
+# Regular expression to catch various Instagram URLs (post, reel, igtv)
 URL_REGEX = r'(https?://(?:www\.)?instagram\.com/(?:p|tv|reel)/[^/?#]+)'
 
 # Handler function must be async in v20+
@@ -48,8 +53,6 @@ async def handle_message(update: Update, context):
     text = update.message.text
     chat_id = update.message.chat_id
     
-    # The bot will respond to all users.
-
     match = re.search(URL_REGEX, text)
     if not match:
         await update.message.reply_text("Please send a valid Instagram link (Post, Reel, or IGTV).")
@@ -59,28 +62,32 @@ async def handle_message(update: Update, context):
     await context.bot.send_message(chat_id, "⏳ Processing and downloading your link... Please wait. (Time depends on file size)")
 
     try:
-        # Retrieve post information using instaloader (Blocking call, handled by V20+ application threads)
-        post = instaloader.Post.from_url(L.context, post_url)
+        # 1. FIX: Use L.post_from_url() instead of the removed Post.from_url() method.
+        post = L.post_from_url(post_url)
         
-        # 1. Extract Caption (Post text)
+        if post is None:
+             await context.bot.send_message(chat_id, "❌ Could not find or access the post. It might be private or the link is broken.")
+             return
+             
+        # 2. Extract Caption (Post text)
         caption = post.caption if post.caption else "⚠️ No caption was found for this post."
         
-        # 2. Download media
+        # 3. Download media
         os.makedirs('downloads', exist_ok=True)
         L.download_post(post, 'downloads')
         
-        # 3. Find downloaded file
+        # 4. Find downloaded file
         downloaded_files = [f for f in os.listdir('downloads') if not f.endswith(('.json', '.txt', '.-tmp'))]
         
         if not downloaded_files:
-             await context.bot.send_message(chat_id, "❌ An error occurred during file download. (Link might be private or invalid)")
+             await context.bot.send_message(chat_id, "❌ An error occurred during file download.")
              return
         
         # Main media file (video or image)
         media_file_name = [f for f in downloaded_files if not f.endswith(('.txt', '.json'))][0]
         file_path = os.path.join('downloads', media_file_name)
         
-        # 4. Send Caption and Media to the user (Using await for asynchronous operations)
+        # 5. Send Caption and Media to the user
         await context.bot.send_message(chat_id, f"✅ **Post Caption:**\n\n---\n{caption}\n---", parse_mode=telegram.constants.ParseMode.MARKDOWN)
         
         # Send Media
@@ -92,9 +99,9 @@ async def handle_message(update: Update, context):
                 await context.bot.send_photo(chat_id, photo_file)
         
     except Exception as e:
-        await context.bot.send_message(chat_id, f"❌ An error occurred. (e.g., Post not found or deleted): {str(e)}")
+        await context.bot.send_message(chat_id, f"❌ An error occurred: {str(e)}")
     finally:
-        # 5. Clean up temporary files
+        # 6. Clean up temporary files
         if os.path.exists('downloads'):
             os.system('rm -rf downloads')
 
@@ -102,7 +109,7 @@ def main():
     # Use Application builder (V20+ standard)
     application = Application.builder().token(TOKEN).build()
     
-    # Register handlers using the new filters structure
+    # Register handlers
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Run the application (synchronous blocking call)
