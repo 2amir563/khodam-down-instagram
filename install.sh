@@ -1,137 +1,284 @@
-cd /root
-cat > install_new.sh << 'EOF'
 #!/bin/bash
 
-echo "Instagram Bot Installer with Token Setup"
-echo "========================================"
+# Instagram Telegram Bot - Simple & Working Version
+# Run this on your Linux server
 
-# Install requirements
+set -e
+
+echo "=========================================="
+echo "Instagram Telegram Bot Installer"
+echo "=========================================="
+
+# Update system
 apt-get update
-apt-get install -y python3 python3-pip
-pip3 install python-telegram-bot
+apt-get install -y python3 python3-pip git curl
 
 # Create directory
-mkdir -p /root/instagram_bot_new
-cd /root/instagram_bot_new
+mkdir -p /root/instagram_bot
+cd /root/instagram_bot
 
-# Get token
-echo ""
-echo "Enter your Telegram Bot Token:"
-echo "(Get it from @BotFather on Telegram)"
-read TOKEN
+# Install required packages
+pip3 install python-telegram-bot==20.7 requests beautifulsoup4
 
-if [ -z "$TOKEN" ]; then
-    echo "Error: Token is required!"
-    exit 1
-fi
+# Create bot.py
+cat > bot.py << 'EOF'
+#!/usr/bin/env python3
+"""
+Instagram Telegram Bot
+Send Instagram link, get JSON file
+"""
 
-# Create config file
-echo "TELEGRAM_TOKEN = '$TOKEN'" > config.py
-
-# Create bot
-cat > bot.py << 'BOTPY'
 import os
-import sys
 import json
+import logging
 import tempfile
+import re
+import time
 from datetime import datetime
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-try:
-    from config import TELEGRAM_TOKEN
-except:
-    print("ERROR: config.py not found or invalid")
-    sys.exit(1)
-
+import requests
+from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ ربات نصب شد!\nلینک اینستاگرام بفرستید.")
+# Setup logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
-    
-    if "instagram.com" not in url:
-        await update.message.reply_text("❌ لطفاً فقط لینک اینستاگرام بفرستید.")
-        return
-    
-    msg = await update.message.reply_text("⏳ در حال ایجاد فایل...")
-    
+# Your Telegram Bot Token
+TOKEN = "8502213708:AAud0o3wEjhWKNPqXjY5AoNIi6fEQiL4tf4"
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    await update.message.reply_text(
+        "📱 *Instagram Bot*\n\n"
+        "ارسال کنید لینک اینستاگرام\n"
+        "دریافت کنید فایل JSON\n\n"
+        "_Just send me any Instagram link_",
+        parse_mode='Markdown'
+    )
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help command"""
+    await update.message.reply_text(
+        "❓ *راهنما*\n\n"
+        "1. لینک اینستاگرام را کپی کنید\n"
+        "2. برای ربات ارسال کنید\n"
+        "3. فایل JSON دریافت کنید\n\n"
+        "مثال لینک:\n"
+        "https://www.instagram.com/p/ABC123/\n"
+        "https://instagram.com/reel/XYZ456/",
+        parse_mode='Markdown'
+    )
+
+def get_instagram_data(url):
+    """Get data from Instagram link"""
     try:
-        # Create data
-        data = {
-            "instagram_url": url,
-            "received_at": datetime.now().isoformat(),
-            "telegram_user_id": update.effective_user.id,
-            "telegram_username": update.effective_user.username,
-            "message": "این فایل حاوی لینک اینستاگرام شماست",
-            "note": "ربات توسط کاربر اجرا شده است"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         
-        # Create JSON
-        json_str = json.dumps(data, indent=2, ensure_ascii=False)
+        # Clean URL
+        if not url.startswith('http'):
+            url = 'https://' + url
         
-        # Save to temp file
+        logger.info(f"Fetching: {url}")
+        response = requests.get(url, headers=headers, timeout=15)
+        html = response.text
+        
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Extract basic info
+        data = {
+            'url': url,
+            'timestamp': datetime.now().isoformat(),
+            'status_code': response.status_code,
+            'content_length': len(html)
+        }
+        
+        # Get title
+        title_tag = soup.find('title')
+        if title_tag:
+            data['title'] = title_tag.text.strip()
+        
+        # Get meta description
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        if meta_desc and meta_desc.get('content'):
+            data['description'] = meta_desc['content']
+        
+        # Get Open Graph data
+        og_title = soup.find('meta', property='og:title')
+        if og_title and og_title.get('content'):
+            data['og_title'] = og_title['content']
+        
+        og_desc = soup.find('meta', property='og:description')
+        if og_desc and og_desc.get('content'):
+            data['og_description'] = og_desc['content']
+        
+        og_image = soup.find('meta', property='og:image')
+        if og_image and og_image.get('content'):
+            data['og_image'] = og_image['content']
+        
+        # Extract text content
+        for script in soup(["script", "style"]):
+            script.decompose()
+        
+        text = soup.get_text()
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        data['text_content'] = '\n'.join(lines[:50])  # First 50 lines
+        
+        # Extract shortcode from URL
+        shortcode_match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?]+)', url)
+        if shortcode_match:
+            data['shortcode'] = shortcode_match.group(1)
+        
+        # Extract usernames and hashtags from text
+        usernames = re.findall(r'@([a-zA-Z0-9_.]+)', text)
+        hashtags = re.findall(r'#([a-zA-Z0-9_]+)', text)
+        
+        if usernames:
+            data['mentions'] = list(set(usernames))[:10]
+        if hashtags:
+            data['hashtags'] = list(set(hashtags))[:10]
+        
+        data['success'] = True
+        return data
+        
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        return {
+            'success': False,
+            'url': url,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming Instagram links"""
+    user_text = update.message.text.strip()
+    
+    # Check if it's Instagram link
+    if 'instagram.com' not in user_text and 'instagr.am' not in user_text:
+        await update.message.reply_text("لطفاً لینک اینستاگرام ارسال کنید.")
+        return
+    
+    # Send processing message
+    msg = await update.message.reply_text("در حال پردازش لینک...")
+    
+    try:
+        # Get data
+        data = get_instagram_data(user_text)
+        
+        if not data.get('success', False):
+            await msg.edit_text("خطا در دریافت اطلاعات. لینک را بررسی کنید.")
+            return
+        
+        # Create JSON file
+        json_str = json.dumps(data, indent=2, ensure_ascii=False, default=str)
+        
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
             f.write(json_str)
             temp_file = f.name
         
         # Send file
-        with open(temp_file, 'rb') as f:
+        with open(temp_file, 'rb') as file:
             await update.message.reply_document(
-                document=f,
-                filename=f"instagram_link_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                caption=f"📁 فایل لینک اینستاگرام\n{url[:50]}..."
+                document=file,
+                filename=f"instagram_{data.get('shortcode', 'data')}_{int(time.time())}.json",
+                caption=f"📁 فایل JSON\nلینک: {user_text[:50]}..."
             )
         
+        # Cleanup
+        import os
         os.unlink(temp_file)
-        await msg.edit_text("✅ فایل ارسال شد.")
+        
+        await msg.edit_text("✅ فایل JSON ارسال شد.")
         
     except Exception as e:
-        await msg.edit_text(f"❌ خطا: {str(e)}")
+        logger.error(f"Error: {e}")
+        await msg.edit_text(f"خطا: {str(e)[:100]}")
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle errors"""
+    logger.error(f"Error: {context.error}")
 
 def main():
-    print(f"Starting bot with token: {TELEGRAM_TOKEN[:10]}...")
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    """Start the bot"""
+    print("Starting Instagram Bot...")
+    print(f"Token: {TOKEN[:10]}...")
+    
+    app = Application.builder().token(TOKEN).build()
+    
+    # Add handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Error handler
+    app.add_error_handler(error_handler)
+    
     print("Bot is running. Press Ctrl+C to stop.")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-BOTPY
-
-# Create start script
-cat > start.sh << 'START'
-#!/bin/bash
-cd /root/instagram_bot_new
-python3 bot.py
-START
-
-chmod +x start.sh bot.py
-
-# Start bot in screen
-screen -dmS instagram_bot python3 bot.py
-
-echo ""
-echo "✅ Installation complete!"
-echo ""
-echo "Your bot is running."
-echo "Token: $TOKEN"
-echo ""
-echo "To manage bot:"
-echo "  screen -r instagram_bot  # View bot"
-echo "  Ctrl+A, D                # Detach from screen"
-echo "  screen -list             # List screens"
-echo ""
-echo "To change token later:"
-echo "  nano /root/instagram_bot_new/config.py"
-echo "  screen -XS instagram_bot quit"
-echo "  screen -dmS instagram_bot python3 /root/instagram_bot_new/bot.py"
 EOF
 
-chmod +x install_new.sh
-./install_new.sh
+# Make executable
+chmod +x bot.py
+
+# Create systemd service
+cat > /etc/systemd/system/instagram-bot.service << EOF
+[Unit]
+Description=Instagram Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/instagram_bot
+ExecStart=/usr/bin/python3 /root/instagram_bot/bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable and start service
+systemctl daemon-reload
+systemctl enable instagram-bot.service
+systemctl start instagram-bot.service
+
+# Check status
+sleep 3
+echo "Checking service status..."
+systemctl status instagram-bot.service --no-pager
+
+echo ""
+echo "=========================================="
+echo "✅ نصب کامل شد!"
+echo "=========================================="
+echo ""
+echo "دستورات مدیریت:"
+echo "systemctl status instagram-bot"
+echo "systemctl restart instagram-bot"
+echo "journalctl -u instagram-bot -f"
+echo ""
+echo "ربات را در تلگرام تست کنید:"
+echo "1. به ربات مراجعه کنید"
+echo "2. دستور /start را بفرستید"
+echo "3. یک لینک اینستاگرام ارسال کنید"
+echo "4. فایل JSON دریافت کنید"
+echo ""
+echo "مثال لینک:"
+echo "https://www.instagram.com/p/CvC9FkHNrJI/"
+echo ""
+EOF
+
+# Run the installer
+chmod +x install.sh
+./install.sh
