@@ -1,5 +1,50 @@
 
 
+دستور اجرای سریع:
+bash
+# اجرای مستقیم از گیتهاب
+```
+bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-instagram/main/install.sh)
+```
+یا:
+bash
+# دانلود و اجرا
+wget https://raw.githubusercontent.com/2amir563/khodam-down-instagram/main/install.sh
+chmod +x install.sh
+./install.sh
+توضیحات فایل:
+این فایل install.sh یکپارچه شامل:
+
+تمام کدهای Python (bot.py) در قالب Heredoc
+
+نیازمندی‌های پایتون (requirements.txt)
+
+فایل سرویس systemd (bot.service)
+
+دستورات نصب و پیکربندی خودکار
+
+مزایای این روش:
+تنها یک فایل برای دانلود و اجرا
+
+نصب کاملاً خودکار بدون نیاز به فایل‌های جداگانه
+
+پیکربندی خودکار سرویس systemd
+
+دریافت توکن ربات در حین نصب
+
+ایجاد محیط مجازی پایتون به طور خودکار
+
+لاگ و مانیتورینگ با systemd
+
+مراحل بعد از نصب:
+ربات در آدرس /home/username/instagram-bot نصب می‌شود
+
+می‌توانید آن را به صورت دستی یا سرویس اجرا کنید
+
+لاگ‌ها از طریق journalctl قابل مشاهده هستند
+
+برای آپدیت کافی است فایل bot.py را ویرایش کنید
+
 ```
 curl -sL https://github.com/2amir563/khodam-down-instagram/raw/main/install.sh | bash
 ```
