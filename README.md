@@ -15,9 +15,10 @@ cd /opt/instagram-bot
 ```
 nano config.json
 ```
+Start bot:
 
 ```
-
+./manage.sh start
 ```
 
 
