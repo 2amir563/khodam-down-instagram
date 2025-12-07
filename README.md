@@ -3,6 +3,22 @@
 ```
 bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-instagram/main/install.sh)
 ```
+مرحله 5: پیکربندی ربات
+bash
+# رفتن به دایرکتوری ربات
+```
+cd /opt/instagram-bot
+```
+
+# ویرایش فایل کانفیگ
+
+```
+nano config.json
+```
+
+```
+
+```
 
 
 
