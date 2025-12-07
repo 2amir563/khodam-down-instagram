@@ -1,18 +1,17 @@
 #!/bin/bash
 
-# Instagram Telegram Bot - Simple Version
-# Save this as install.sh on GitHub
+# Instagram Video Downloader Telegram Bot
 # Run: bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-instagram/main/install.sh)
 
 set -e
 
 echo "=========================================="
-echo "Instagram Telegram Bot Installer"
+echo "Instagram Video Downloader Bot Installer"
 echo "=========================================="
 
 # Colors
-RED='\033[0;31m'
 GREEN='\033[0;32m'
+RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
@@ -21,84 +20,67 @@ print_success() { echo -e "${GREEN}[✓]${NC} $1"; }
 print_error() { echo -e "${RED}[✗]${NC} $1"; }
 print_info() { echo -e "${YELLOW}[i]${NC} $1"; }
 
-# Step 1: Check if running as root
-if [ "$EUID" -ne 0 ]; then 
-    print_info "Running as non-root user, using sudo for system commands"
-    SUDO="sudo"
-else
-    SUDO=""
-fi
+# Step 1: Install dependencies
+print_info "Step 1: Installing system dependencies..."
+apt-get update -y
+apt-get install -y python3 python3-pip python3-venv git curl wget ffmpeg
 
-# Step 2: Update and install dependencies
-print_info "Step 1: Updating system packages..."
-$SUDO apt-get update -y
-$SUDO apt-get upgrade -y
-
-print_info "Step 2: Installing Python and dependencies..."
-$SUDO apt-get install -y python3 python3-pip python3-venv git curl wget
-
-# Step 3: Create installation directory
-print_info "Step 3: Creating installation directory..."
-INSTALL_DIR="/opt/instagram_bot"
-$SUDO mkdir -p $INSTALL_DIR
+# Step 2: Create directory
+print_info "Step 2: Creating installation directory..."
+INSTALL_DIR="/opt/instagram_video_bot"
+mkdir -p $INSTALL_DIR
 cd $INSTALL_DIR
 
-# Step 4: Create virtual environment
-print_info "Step 4: Creating Python virtual environment..."
+# Step 3: Create virtual environment
+print_info "Step 3: Creating Python virtual environment..."
 python3 -m venv venv
 source venv/bin/activate
 
-# Step 5: Install Python packages
-print_info "Step 5: Installing required Python packages..."
+# Step 4: Install Python packages
+print_info "Step 4: Installing Python packages..."
 pip install --upgrade pip
-pip install python-telegram-bot==20.7 requests beautifulsoup4 lxml
+pip install yt-dlp==2025.11.12 python-telegram-bot==20.7 requests beautifulsoup4
 
-# Step 6: Create bot configuration
-print_info "Step 6: Creating bot configuration..."
-
-# Ask for Telegram Bot Token
+# Step 5: Get Telegram Bot Token
+print_info "Step 5: Setting up Telegram Bot..."
 echo ""
 echo "=========================================="
-echo "TELEGRAM BOT TOKEN SETUP"
+echo "TELEGRAM BOT TOKEN"
 echo "=========================================="
 echo "To get your bot token:"
 echo "1. Open Telegram"
 echo "2. Search for @BotFather"
 echo "3. Send /newbot command"
 echo "4. Follow the instructions"
-echo "5. Copy the token (looks like: 1234567890:ABCdefGHIjklMnOpQRstUVwxyz)"
+echo "5. Copy the token"
 echo "=========================================="
 echo ""
 
 read -p "Enter your Telegram Bot Token: " BOT_TOKEN
 
-# Validate token format
 if [ -z "$BOT_TOKEN" ]; then
     print_error "Token cannot be empty!"
     exit 1
 fi
 
-if [[ ! "$BOT_TOKEN" =~ ^[0-9]{8,10}:[a-zA-Z0-9_-]{35}$ ]]; then
-    print_info "Warning: Token format looks unusual, but continuing anyway..."
-fi
-
 # Create config file
-cat > config.json << EOF
-{
-    "telegram_token": "$BOT_TOKEN",
-    "admin_ids": [],
-    "log_file": "/var/log/instagram_bot.log",
-    "temp_dir": "/tmp/instagram_bot"
-}
+cat > config.py << EOF
+# Telegram Bot Configuration
+TELEGRAM_TOKEN = "$BOT_TOKEN"
+
+# Download settings
+DOWNLOAD_DIR = "downloads"
+MAX_FILE_SIZE = 2000  # MB
+TIMEOUT = 30
 EOF
 
-# Step 7: Create the main bot file
-print_info "Step 7: Creating bot.py..."
+# Step 6: Create the bot
+print_info "Step 6: Creating bot.py..."
 cat > bot.py << 'EOF'
 #!/usr/bin/env python3
 """
-Instagram Telegram Bot
-Send Instagram link → Get JSON file
+Instagram Video Downloader Telegram Bot
+Downloads and sends Instagram videos
 """
 
 import os
@@ -111,49 +93,59 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import yt_dlp
 import requests
-from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Load configuration
-CONFIG_FILE = "config.json"
-if os.path.exists(CONFIG_FILE):
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        config = json.load(f)
-    TOKEN = config.get('telegram_token', '')
-else:
-    print(f"ERROR: Config file {CONFIG_FILE} not found!")
-    sys.exit(1)
+# Add current directory to path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-if not TOKEN:
-    print("ERROR: Telegram token not found in config!")
+# Load configuration
+try:
+    from config import TELEGRAM_TOKEN, DOWNLOAD_DIR, MAX_FILE_SIZE, TIMEOUT
+except ImportError:
+    print("ERROR: config.py not found!")
     sys.exit(1)
 
 # Setup logging
-LOG_FILE = config.get('log_file', '/var/log/instagram_bot.log')
-Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
+        logging.FileHandler('bot.log', encoding='utf-8'),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-class InstagramBot:
+class InstagramDownloader:
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-        })
-        logger.info("Instagram Bot initialized")
+        self.download_dir = Path(DOWNLOAD_DIR)
+        self.download_dir.mkdir(exist_ok=True)
+        
+        # yt-dlp options for Instagram
+        self.ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'format': 'best',
+            'outtmpl': str(self.download_dir / '%(title).100s.%(ext)s'),
+            'merge_output_format': 'mp4',
+            'postprocessors': [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }],
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Referer': 'https://www.instagram.com/',
+            }
+        }
+        
+        logger.info("Instagram Downloader initialized")
     
     def extract_shortcode(self, url):
         """Extract shortcode from Instagram URL"""
@@ -168,227 +160,273 @@ class InstagramBot:
                 return match.group(1)
         return None
     
-    def get_instagram_data(self, url):
-        """Get data from Instagram link"""
+    def get_video_info(self, url):
+        """Get video information without downloading"""
         try:
-            logger.info(f"Processing URL: {url}")
-            
-            # Clean URL
-            if not url.startswith('http'):
-                url = 'https://' + url
-            
-            response = self.session.get(url, timeout=15)
-            response.raise_for_status()
-            
-            html = response.text
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            # Extract data
-            data = {
-                'url': url,
-                'timestamp': datetime.now().isoformat(),
-                'status_code': response.status_code,
-                'content_length': len(html),
-                'success': True
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'skip_download': True,
             }
             
-            # Extract shortcode
-            shortcode = self.extract_shortcode(url)
-            if shortcode:
-                data['shortcode'] = shortcode
-                data['instagram_url'] = f"https://www.instagram.com/p/{shortcode}/"
-            
-            # Extract title
-            title_tag = soup.find('title')
-            if title_tag:
-                data['title'] = title_tag.text.strip()
-            
-            # Extract meta description
-            meta_desc = soup.find('meta', attrs={'name': 'description'})
-            if meta_desc and meta_desc.get('content'):
-                data['description'] = meta_desc['content']
-            
-            # Extract Open Graph data
-            og_title = soup.find('meta', property='og:title')
-            if og_title and og_title.get('content'):
-                data['og_title'] = og_title['content']
-            
-            og_desc = soup.find('meta', property='og:description')
-            if og_desc and og_desc.get('content'):
-                data['og_description'] = og_desc['content']
-            
-            og_image = soup.find('meta', property='og:image')
-            if og_image and og_image.get('content'):
-                data['og_image'] = og_image['content']
-            
-            # Extract text content
-            for script in soup(["script", "style", "noscript"]):
-                script.decompose()
-            
-            text = soup.get_text(separator='\n', strip=True)
-            lines = [line for line in text.split('\n') if line.strip()]
-            data['text_content'] = '\n'.join(lines[:20])  # First 20 lines
-            
-            # Extract mentions and hashtags
-            all_text = ' '.join(lines)
-            mentions = re.findall(r'@([a-zA-Z0-9_.]+)', all_text)
-            hashtags = re.findall(r'#([a-zA-Z0-9_]+)', all_text)
-            
-            if mentions:
-                data['mentions'] = list(set(mentions))[:10]
-            if hashtags:
-                data['hashtags'] = list(set(hashtags))[:10]
-            
-            logger.info(f"Successfully extracted data from {url}")
-            return data
-            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                result = {
+                    'title': info.get('title', 'Instagram Video'),
+                    'duration': info.get('duration', 0),
+                    'uploader': info.get('uploader', ''),
+                    'upload_date': info.get('upload_date', ''),
+                    'view_count': info.get('view_count', 0),
+                    'like_count': info.get('like_count', 0),
+                    'comment_count': info.get('comment_count', 0),
+                    'formats': [],
+                    'success': True
+                }
+                
+                # Get available formats
+                if 'formats' in info:
+                    for fmt in info['formats']:
+                        if fmt.get('vcodec') != 'none':  # Only video formats
+                            result['formats'].append({
+                                'format_id': fmt.get('format_id'),
+                                'ext': fmt.get('ext', 'mp4'),
+                                'resolution': fmt.get('resolution', 'N/A'),
+                                'filesize': fmt.get('filesize', 0),
+                                'filesize_mb': fmt.get('filesize', 0) / (1024 * 1024) if fmt.get('filesize') else 0,
+                                'format_note': fmt.get('format_note', '')
+                            })
+                
+                return result
+                
         except Exception as e:
-            logger.error(f"Error extracting data: {e}")
-            return {
-                'success': False,
-                'url': url,
-                'error': str(e),
-                'timestamp': datetime.now().isoformat()
-            }
+            logger.error(f"Error getting video info: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    def download_video(self, url, format_id='best'):
+        """Download Instagram video"""
+        try:
+            # Update format if specified
+            ydl_opts = self.ydl_opts.copy()
+            ydl_opts['format'] = format_id
+            
+            logger.info(f"Downloading {url} with format {format_id}")
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                
+                # Check if file exists
+                if os.path.exists(filename):
+                    file_size = os.path.getsize(filename)
+                    file_size_mb = file_size / (1024 * 1024)
+                    
+                    if file_size_mb > MAX_FILE_SIZE:
+                        os.remove(filename)
+                        return {
+                            'success': False,
+                            'error': f'File too large: {file_size_mb:.1f}MB > {MAX_FILE_SIZE}MB'
+                        }
+                    
+                    return {
+                        'success': True,
+                        'filename': filename,
+                        'title': info.get('title', 'Instagram Video'),
+                        'duration': info.get('duration', 0),
+                        'file_size': file_size,
+                        'file_size_mb': file_size_mb,
+                        'extension': os.path.splitext(filename)[1]
+                    }
+                else:
+                    return {'success': False, 'error': 'File not found after download'}
+                    
+        except Exception as e:
+            logger.error(f"Download error: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    def cleanup_old_files(self):
+        """Cleanup files older than 10 minutes"""
+        cutoff_time = time.time() - (10 * 60)
+        
+        for file_path in self.download_dir.glob('*'):
+            if file_path.is_file():
+                file_age = time.time() - file_path.stat().st_mtime
+                if file_age > (10 * 60):
+                    try:
+                        file_path.unlink()
+                        logger.info(f"Cleaned up: {file_path.name}")
+                    except Exception as e:
+                        logger.error(f"Error cleaning {file_path}: {e}")
 
-# Create bot instance
-bot = InstagramBot()
+# Create downloader instance
+downloader = InstagramDownloader()
 
 # Telegram handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
-    welcome_text = """
-🤖 *Instagram Telegram Bot*
+    welcome = """
+🎬 *Instagram Video Downloader Bot*
 
 ارسال کنید: لینک اینستاگرام
-دریافت کنید: فایل JSON
+دریافت کنید: ویدیو با کیفیت بالا
 
-🎯 *نحوه استفاده:*
-1. لینک اینستاگرام را کپی کنید
-2. برای ربات ارسال کنید
-3. فایل JSON دریافت کنید
+✅ *پشتیبانی از:*
+• رییل‌ها (reel)
+• پست‌های ویدیویی
+• استوری‌ها (اگر عمومی باشند)
+
+⚡ *ویژگی‌ها:*
+• دانلود مستقیم با بهترین کیفیت
+• تبدیل به فرمت MP4
+• ارسال در تلگرام
+• پشتیبانی از لینک‌های مختلف
 
 🔗 *مثال لینک:*
-• https://www.instagram.com/p/ABC123/
-• https://instagram.com/reel/XYZ456/
-• https://instagram.com/tv/DEF789/
+https://www.instagram.com/reel/DNThWFaopCk/
+https://instagram.com/p/ABC123/
+https://instagram.com/tv/XYZ456/
 
-📊 *اطلاعات استخراج شده:*
-• متن و توضیحات پست
-• اطلاعات متا
-• منشن‌ها و هشتگ‌ها
-• لینک‌های تصویر
-
-💡 *توجه:* فقط پست‌های عمومی قابل استخراج هستند.
+📌 فقط لینک اینستاگرام ارسال کنید!
 """
-    await update.message.reply_text(welcome_text, parse_mode='Markdown')
-    logger.info(f"User {update.effective_user.id} started the bot")
+    await update.message.reply_text(welcome, parse_mode='Markdown')
+    logger.info(f"User {update.effective_user.id} started bot")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command"""
     help_text = """
 📖 *راهنمای استفاده*
 
-*چه لینک‌هایی پشتیبانی می‌شود:*
-✅ پست عکس: instagram.com/p/...
-✅ رییل: instagram.com/reel/...
-✅ ویدیو: instagram.com/tv/...
+*نحوه کار:*
+1. لینک اینستاگرام را کپی کنید
+2. برای ربات ارسال کنید
+3. ربات ویدیو را دانلود و ارسال می‌کند
 
-*چه اطلاعاتی استخراج می‌شود:*
-• متن اصلی پست
-• توضیحات متا
-• لینک تصویر اصلی
-• منشن‌ها و هشتگ‌ها
-• اطلاعات فنی
+*محدودیت‌ها:*
+• حداکثر حجم: 2000 مگابایت
+• فقط ویدیوهای عمومی
+• ممکن است برخی پست‌ها دانلود نشوند
 
-*اگر خطا دریافت کردید:*
+*اگر خطا داد:*
 1. مطمئن شوید لینک درست است
-2. اطمینان حاصل کنید پست عمومی است
+2. پست عمومی باشد
 3. اینترنت سرور را چک کنید
 4. دوباره امتحان کنید
 
-*برای شروع:* یک لینک اینستاگرام ارسال کنید!
+*تست ربات:* یک لینک اینستاگرام ارسال کنید!
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming messages"""
+async def handle_instagram_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Instagram links"""
     user_id = update.effective_user.id
-    user_text = update.message.text.strip()
+    url = update.message.text.strip()
     
-    logger.info(f"User {user_id} sent: {user_text[:50]}")
+    logger.info(f"User {user_id} sent: {url}")
     
-    # Check if it's an Instagram link
-    if not ('instagram.com' in user_text or 'instagr.am' in user_text):
+    # Check if it's Instagram link
+    if 'instagram.com' not in url and 'instagr.am' not in url:
         await update.message.reply_text(
             "❌ *لینک اینستاگرام نیست*\n\n"
             "لطفاً فقط لینک اینستاگرام ارسال کنید.\n"
-            "مثال: https://www.instagram.com/p/ABC123/",
+            "مثال: https://www.instagram.com/reel/DNThWFaopCk/",
             parse_mode='Markdown'
         )
         return
     
     # Send processing message
-    msg = await update.message.reply_text("⏳ *در حال پردازش لینک...*", parse_mode='Markdown')
+    msg = await update.message.reply_text(
+        "⏳ *در حال پردازش لینک...*\n"
+        "دریافت اطلاعات ویدیو...",
+        parse_mode='Markdown'
+    )
     
     try:
-        # Get data from Instagram
-        data = bot.get_instagram_data(user_text)
+        # Get video info first
+        video_info = downloader.get_video_info(url)
         
-        if not data.get('success', False):
-            error_msg = data.get('error', 'Unknown error')
+        if not video_info.get('success'):
             await msg.edit_text(
-                f"❌ *خطا در استخراج اطلاعات*\n\n"
-                f"خطا: {error_msg[:100]}\n\n"
-                f"لطفاً لینک را بررسی کنید و دوباره امتحان کنید.",
+                f"❌ *خطا در دریافت اطلاعات*\n\n"
+                f"خطا: {video_info.get('error', 'Unknown error')}\n\n"
+                f"مطمئن شوید لینک درست است و ویدیو عمومی باشد.",
                 parse_mode='Markdown'
             )
             return
         
-        # Create JSON file
-        json_str = json.dumps(data, indent=2, ensure_ascii=False, default=str)
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
-            f.write(json_str)
-            temp_file = f.name
-        
-        # Determine filename
-        shortcode = data.get('shortcode', 'instagram')
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"instagram_{shortcode}_{timestamp}.json"
-        
-        # Send file
-        with open(temp_file, 'rb') as file:
-            await update.message.reply_document(
-                document=file,
-                filename=filename,
-                caption=f"📁 *فایل اطلاعات اینستاگرام*\n\n"
-                       f"🔗 لینک: {data['url'][:50]}...\n"
-                       f"🕐 زمان: {datetime.now().strftime('%H:%M:%S')}\n"
-                       f"📊 حجم داده: {len(json_str):,} کاراکتر",
-                parse_mode='Markdown'
-            )
-        
-        # Cleanup temp file
-        os.unlink(temp_file)
-        
-        # Send success message
+        # Update message
         await msg.edit_text(
-            f"✅ *فایل ارسال شد!*\n\n"
-            f"📊 *خلاصه اطلاعات:*\n"
-            f"• کد پست: {data.get('shortcode', 'نامشخص')}\n"
-            f"• عنوان: {data.get('title', data.get('og_title', 'نامشخص'))[:50]}...\n"
-            f"• توضیحات: {len(data.get('description', data.get('og_description', '')))} کاراکتر\n"
-            f"• منشن‌ها: {len(data.get('mentions', []))}\n"
-            f"• هشتگ‌ها: {len(data.get('hashtags', []))}\n\n"
-            f"📁 فایل JSON شامل تمام اطلاعات است.",
+            f"✅ *اطلاعات دریافت شد*\n\n"
+            f"📹 عنوان: {video_info['title'][:50]}...\n"
+            f"⏱️ مدت: {video_info['duration']} ثانیه\n"
+            f"👤 آپلودر: {video_info['uploader'] or 'نامشخص'}\n\n"
+            f"⏳ *در حال دانلود ویدیو...*",
             parse_mode='Markdown'
         )
         
-        logger.info(f"Successfully sent file for user {user_id}")
+        # Download video
+        result = downloader.download_video(url)
+        
+        if not result.get('success'):
+            await msg.edit_text(
+                f"❌ *خطا در دانلود*\n\n"
+                f"خطا: {result.get('error', 'Unknown error')}\n\n"
+                f"لطفاً دوباره امتحان کنید.",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Update message
+        file_size = result['file_size_mb']
+        await msg.edit_text(
+            f"✅ *ویدیو دانلود شد*\n\n"
+            f"📁 نام فایل: {os.path.basename(result['filename'])}\n"
+            f"💾 حجم: {file_size:.1f} MB\n"
+            f"⏱️ مدت: {result['duration']} ثانیه\n\n"
+            f"📤 *در حال آپلود به تلگرام...*",
+            parse_mode='Markdown'
+        )
+        
+        # Send video
+        with open(result['filename'], 'rb') as video_file:
+            await update.message.reply_video(
+                video=video_file,
+                caption=f"📹 {result['title'][:50]}\n"
+                       f"⏱️ مدت: {result['duration']} ثانیه\n"
+                       f"💾 حجم: {file_size:.1f} MB\n"
+                       f"🕐 زمان: {datetime.now().strftime('%H:%M:%S')}",
+                supports_streaming=True,
+                parse_mode='Markdown'
+            )
+        
+        # Final message
+        await msg.edit_text(
+            f"🎉 *ویدیو ارسال شد!*\n\n"
+            f"✅ دانلود و آپلود موفق\n"
+            f"📊 حجم: {file_size:.1f} MB\n"
+            f"⏱️ مدت: {result['duration']} ثانیه\n"
+            f"📁 فرمت: MP4\n\n"
+            f"💡 فایل به‌صورت خودکار پاک می‌شود.",
+            parse_mode='Markdown'
+        )
+        
+        logger.info(f"Successfully sent video for user {user_id}")
+        
+        # Schedule cleanup
+        def cleanup_file():
+            time.sleep(300)  # 5 minutes
+            if os.path.exists(result['filename']):
+                try:
+                    os.remove(result['filename'])
+                    logger.info(f"Cleaned up: {result['filename']}")
+                except:
+                    pass
+        
+        import threading
+        threading.Thread(target=cleanup_file, daemon=True).start()
         
     except Exception as e:
-        logger.error(f"Error in handle_message: {e}", exc_info=True)
+        logger.error(f"Error in handle_instagram_link: {e}", exc_info=True)
         await msg.edit_text(
             f"❌ *خطای غیرمنتظره*\n\n"
             f"خطا: {str(e)[:100]}\n\n"
@@ -410,22 +448,26 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 def main():
-    """Main function to run the bot"""
-    print("=" * 50)
-    print("🤖 Instagram Telegram Bot")
-    print("=" * 50)
-    print(f"Token: {TOKEN[:10]}...")
-    print(f"Log file: {LOG_FILE}")
-    print("=" * 50)
+    """Start the bot"""
+    print("=" * 60)
+    print("🎬 Instagram Video Downloader Telegram Bot")
+    print("=" * 60)
+    print(f"Token: {TELEGRAM_TOKEN[:10]}...")
+    print(f"Download dir: {DOWNLOAD_DIR}")
+    print(f"Max file size: {MAX_FILE_SIZE}MB")
+    print("=" * 60)
+    
+    # Run cleanup
+    downloader.cleanup_old_files()
     
     try:
         # Create application
-        application = Application.builder().token(TOKEN).build()
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
         
         # Add handlers
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_instagram_link))
         
         # Add error handler
         application.add_error_handler(error_handler)
@@ -433,8 +475,9 @@ def main():
         # Start bot
         print("✅ Bot is starting...")
         print("📱 Open Telegram and send /start to your bot")
+        print("🔗 Send any Instagram link to download video")
         print("🛑 Press Ctrl+C to stop")
-        print("=" * 50)
+        print("=" * 60)
         
         application.run_polling(allowed_updates=Update.ALL_TYPES)
         
@@ -447,30 +490,114 @@ if __name__ == "__main__":
     main()
 EOF
 
-# Step 8: Create startup script
-print_info "Step 8: Creating startup script..."
-cat > start.sh << 'EOF'
+# Step 7: Create management script
+print_info "Step 7: Creating management script..."
+cat > manage.sh << 'EOF'
 #!/bin/bash
-# Startup script for Instagram Bot
+# Instagram Video Bot Management Script
 
 cd "$(dirname "$0")"
 
-# Activate virtual environment
-source venv/bin/activate
-
-# Run the bot
-python3 bot.py
+case "$1" in
+    start)
+        echo "🚀 Starting Instagram Video Bot..."
+        source venv/bin/activate
+        nohup python3 bot.py >> bot.log 2>&1 &
+        echo $! > bot.pid
+        echo "✅ Bot started (PID: $(cat bot.pid))"
+        echo "📝 Logs: tail -f bot.log"
+        ;;
+    stop)
+        echo "🛑 Stopping bot..."
+        if [ -f "bot.pid" ]; then
+            kill $(cat bot.pid) 2>/dev/null || true
+            rm -f bot.pid
+            echo "✅ Bot stopped"
+        else
+            echo "⚠️ Bot not running"
+        fi
+        ;;
+    restart)
+        echo "🔄 Restarting bot..."
+        ./manage.sh stop
+        sleep 2
+        ./manage.sh start
+        ;;
+    status)
+        echo "📊 Bot Status:"
+        if [ -f "bot.pid" ] && ps -p $(cat bot.pid) > /dev/null 2>&1; then
+            echo "✅ Bot running (PID: $(cat bot.pid))"
+            echo "📝 Recent logs:"
+            tail -10 bot.log
+        else
+            echo "❌ Bot not running"
+            [ -f "bot.pid" ] && rm -f bot.pid
+        fi
+        ;;
+    logs)
+        if [ "$2" = "-f" ]; then
+            tail -f bot.log
+        else
+            tail -50 bot.log
+        fi
+        ;;
+    cleanup)
+        echo "🧹 Cleaning downloads..."
+        rm -rf downloads/*
+        echo "✅ Cleaned"
+        ;;
+    test)
+        echo "🔍 Testing..."
+        source venv/bin/activate
+        python3 -c "
+import yt_dlp, telegram, requests
+print('✅ All imports OK')
+print('Testing Instagram download...')
+try:
+    ydl = yt_dlp.YoutubeDL({'quiet': True})
+    info = ydl.extract_info('https://www.instagram.com/reel/DNThWFaopCk/', download=False)
+    print(f'✅ Can access Instagram: {info.get(\"title\", \"OK\")[:50]}...')
+except Exception as e:
+    print(f'❌ Instagram test failed: {e}')
+"
+        ;;
+    update)
+        echo "📦 Updating bot..."
+        source venv/bin/activate
+        pip install --upgrade yt-dlp python-telegram-bot
+        echo "✅ Updated"
+        ;;
+    *)
+        echo "🎬 Instagram Video Bot Management"
+        echo "================================"
+        echo ""
+        echo "Commands:"
+        echo "  ./manage.sh start     # Start bot"
+        echo "  ./manage.sh stop      # Stop bot"
+        echo "  ./manage.sh restart   # Restart bot"
+        echo "  ./manage.sh status    # Check status"
+        echo "  ./manage.sh logs      # View logs"
+        echo "  ./manage.sh cleanup   # Clean downloads"
+        echo "  ./manage.sh test      # Test installation"
+        echo "  ./manage.sh update    # Update packages"
+        echo ""
+        echo "Features:"
+        echo "  • Download Instagram videos"
+        echo "  • Convert to MP4"
+        echo "  • Send in Telegram"
+        echo "  • Auto cleanup"
+        ;;
+esac
 EOF
 
-chmod +x start.sh bot.py
+chmod +x manage.sh bot.py
 
-# Step 9: Create systemd service
-print_info "Step 9: Creating systemd service..."
-cat > instagram-bot.service << EOF
+# Step 8: Create systemd service
+print_info "Step 8: Creating systemd service..."
+cat > /etc/systemd/system/instagram-video-bot.service << EOF
 [Unit]
-Description=Instagram Telegram Bot
+Description=Instagram Video Downloader Telegram Bot
 After=network.target
-Wants=network-online.target
 
 [Service]
 Type=simple
@@ -482,95 +609,73 @@ Restart=always
 RestartSec=10
 StandardOutput=syslog
 StandardError=syslog
-SyslogIdentifier=instagram-bot
+SyslogIdentifier=instagram-video-bot
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Install the service
-$SUDO cp instagram-bot.service /etc/systemd/system/
-$SUDO systemctl daemon-reload
-$SUDO systemctl enable instagram-bot.service
+# Step 9: Start the bot
+print_info "Step 9: Starting bot service..."
+systemctl daemon-reload
+systemctl enable instagram-video-bot.service
+systemctl start instagram-video-bot.service
 
-# Step 10: Start the service
-print_info "Step 10: Starting bot service..."
-$SUDO systemctl start instagram-bot.service
-
-# Wait a moment and check status
+# Wait and check
 sleep 3
 
-# Step 11: Verify installation
-print_info "Step 11: Verifying installation..."
-SERVICE_STATUS=$($SUDO systemctl is-active instagram-bot.service)
-
-if [ "$SERVICE_STATUS" = "active" ]; then
-    print_success "✅ Bot service is running successfully!"
+print_info "Step 10: Checking service status..."
+if systemctl is-active --quiet instagram-video-bot.service; then
+    print_success "✅ Bot service is running!"
 else
     print_error "❌ Service failed to start!"
-    echo ""
-    echo "Checking logs..."
-    $SUDO journalctl -u instagram-bot.service --no-pager -n 20
-    echo ""
-    print_info "Trying to start manually for debugging..."
-    cd $INSTALL_DIR
-    source venv/bin/activate
-    python3 bot.py || echo "Manual start failed"
+    journalctl -u instagram-video-bot.service --no-pager -n 20
 fi
 
-# Step 12: Final instructions
+# Final instructions
 echo ""
 echo "=========================================="
-echo "✅ INSTALLATION COMPLETE!"
+print_success "INSTALLATION COMPLETE!"
 echo "=========================================="
 echo ""
-echo "📁 Installation directory: $INSTALL_DIR"
-echo "⚙️ Configuration file: $INSTALL_DIR/config.json"
-echo "🤖 Bot file: $INSTALL_DIR/bot.py"
-echo "📊 Log file: /var/log/instagram_bot.log"
+echo "📁 Directory: $INSTALL_DIR"
+echo "🤖 Bot file: bot.py"
+echo "⚙️ Config: config.py"
+echo "📊 Logs: bot.log"
 echo ""
-echo "🔧 Management commands:"
-echo "  sudo systemctl status instagram-bot"
-echo "  sudo systemctl restart instagram-bot"
-echo "  sudo systemctl stop instagram-bot"
-echo "  sudo journalctl -u instagram-bot -f"
+echo "🔧 Management:"
+echo "  systemctl status instagram-video-bot"
+echo "  systemctl restart instagram-video-bot"
+echo "  journalctl -u instagram-video-bot -f"
 echo ""
-echo "🤖 Telegram usage:"
+echo "📱 Telegram Usage:"
 echo "1. Open Telegram"
-echo "2. Search for your bot (ask @BotFather for username)"
-echo "3. Send /start command"
-echo "4. Send any Instagram link"
-echo "5. Receive JSON file with all data"
+echo "2. Find your bot"
+echo "3. Send /start"
+echo "4. Send Instagram link like:"
+echo "   https://www.instagram.com/reel/DNThWFaopCk/"
+echo "5. Receive video in Telegram"
 echo ""
-echo "🔗 Example Instagram links:"
-echo "  https://www.instagram.com/p/CvC9FkHNrJI/"
-echo "  https://instagram.com/reel/Cxample123/"
-echo "  https://instagram.com/tv/ABC123DEF/"
+echo "✨ Features:"
+echo "  • Downloads Instagram videos"
+echo "  • Converts to MP4"
+echo "  • Sends directly in Telegram"
+echo "  • Auto cleanup of files"
 echo ""
-echo "💡 Tip: You can edit config.json to add admin IDs:"
-echo '  "admin_ids": [YOUR_TELEGRAM_ID]'
-echo ""
+echo "Test with your Instagram link now!"
 echo "=========================================="
-echo "Need help? Check logs:"
-echo "sudo journalctl -u instagram-bot -n 50"
-echo "=========================================="
+EOF
 
-# Test the bot token
-echo ""
-print_info "Testing bot connection..."
-sleep 2
-curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getMe" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    if data.get('ok'):
-        print('✅ Bot is connected to Telegram!')
-        print(f'   Bot username: @{data[\"result\"][\"username\"]}')
-        print(f'   Bot name: {data[\"result\"][\"first_name\"]}')
-    else:
-        print('❌ Bot connection failed!')
-        print(f'   Error: {data.get(\"description\", \"Unknown error\")}')
-except Exception as e:
-    print(f'❌ Test error: {e}')
-"
-echo ""
+## دستور ذخیره در گیتهاب:
+
+1. به این آدرس بروید: https://github.com/2amir563/khodam-down-instagram
+2. روی فایل `install.sh` کلیک کنید
+3. روی آیکون مداد (Edit) کلیک کنید
+4. کد بالا را جایگزین کنید
+5. پیام commit: `Add Instagram video downloader bot`
+6. Commit changes
+
+## دستور اجرا در سرور:
+
+```bash
+bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-instagram/main/install.sh)
