@@ -9,6 +9,10 @@ bash
 ```
 cd /opt/instagram-bot
 ```
+```
+cd /opt/instagram-bot
+nano config.json
+```
 
 # ویرایش فایل کانفیگ
 
