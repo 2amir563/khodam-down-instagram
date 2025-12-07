@@ -54,6 +54,10 @@ bash
 ```
 instagram-bot setup
 ```
+```
+nano /opt/instagram_bot/.env
+```
+
 
 # ویرایش فایل تنظیمات
 instagram-bot config
