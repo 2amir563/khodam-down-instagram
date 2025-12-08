@@ -12,7 +12,27 @@ bash
 wget https://raw.githubusercontent.com/2amir563/khodam-down-instagram/main/install.sh
 chmod +x install.sh
 ./install.sh
+
+
+پس از نصب:
+
+توکن را حتماً تنظیم کنید: bash
+```
+cd /opt/quality-tg-bot
+nano config.json
+```
+توکن ربات خود را جایگزین YOUR_BOT_TOKEN_HERE کنید
+
+آیدی تلگرام خود را به admin_ids اضافه کنید
+
+ربات را شروع کنید: bash
+
+```
+./manage.sh start
+```
+
 توضیحات فایل:
+
 این فایل install.sh یکپارچه شامل:
 
 تمام کدهای Python (bot.py) در قالب Heredoc
