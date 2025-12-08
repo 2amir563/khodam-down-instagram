@@ -1,11 +1,11 @@
 #!/bin/bash
-# instagram_bot_install.sh - Install Telegram bot for Instagram with caption support
-# Run: bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/instagram_bot_install.sh)
+# instagram_only_bot_install.sh - Install Telegram bot for Instagram only with caption support
+# Run: bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/instagram_only_bot_install.sh)
 
 set -e
 
-echo "🎯 Installing Instagram Telegram Bot with Caption Support"
-echo "========================================================"
+echo "🎯 Installing Instagram Only Telegram Bot with Caption Support"
+echo "=============================================================="
 
 # Colors
 GREEN='\033[0;32m'
@@ -18,7 +18,7 @@ print_red() { echo -e "${RED}[✗]${NC} $1"; }
 print_blue() { echo -e "${BLUE}[i]${NC} $1"; }
 
 # Install directory
-INSTALL_DIR="/opt/instagram-tg-bot"
+INSTALL_DIR="/opt/instagram-only-bot"
 
 # Step 1: Cleanup
 print_blue "1. Cleaning old installations..."
@@ -42,17 +42,16 @@ print_blue "4. Installing Python packages..."
 pip install --upgrade pip
 pip install python-telegram-bot==20.7 yt-dlp==2025.11.12 requests==2.32.5
 
-# Step 5: Create bot.py with Instagram caption support
-print_blue "5. Creating bot.py with Instagram caption support..."
+# Step 5: Create bot.py with Instagram only support
+print_blue "5. Creating bot.py with Instagram only support..."
 cat > bot.py << 'BOTPYEOF'
 #!/usr/bin/env python3
 """
 Telegram Instagram Download Bot with Caption Support
 Features:
 1. Instagram video download with caption support
-2. Original format preservation for direct files
-3. Auto cleanup every 2 minutes
-4. Pause/Resume functionality
+2. Auto cleanup every 2 minutes
+3. Pause/Resume functionality
 """
 
 import os
@@ -64,10 +63,9 @@ import time
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
-import requests
 
 # Setup logging
 logging.basicConfig(
@@ -97,7 +95,7 @@ class InstagramDownloadBot:
         # Start auto cleanup
         self.start_auto_cleanup()
         
-        logger.info("🤖 Instagram Download Bot initialized")
+        logger.info("🤖 Instagram Only Download Bot initialized")
         print(f"✅ Token: {self.token[:15]}...")
     
     def load_config(self):
@@ -156,14 +154,10 @@ class InstagramDownloadBot:
         if files_deleted > 0:
             logger.info(f"Cleaned {files_deleted} old files")
     
-    def detect_platform(self, url):
-        """Detect platform from URL"""
+    def is_instagram_url(self, url):
+        """Check if URL is from Instagram"""
         url_lower = url.lower()
-        
-        if 'instagram.com' in url_lower:
-            return 'instagram'
-        else:
-            return 'generic'
+        return 'instagram.com' in url_lower
     
     def get_instagram_caption(self, info):
         """Extract caption from Instagram video info"""
@@ -210,21 +204,18 @@ class InstagramDownloadBot:
         welcome = f"""
 Hello {user.first_name}! 👋
 
-🤖 **Instagram Download Bot with Caption Support**
+🤖 **Instagram Download Bot**
 
-📥 **Supported Platforms:**
+📥 **Only Supports:**
 ✅ Instagram (downloads video with caption/description)
-✅ Direct files (keeps original format)
 
 🎯 **How to use:**
-1. Send Instagram link → Downloads video with caption
-2. Send direct file → Keeps original format
+Send Instagram link → Downloads video with caption
 
 ⚡ **Features:**
 • Instagram caption download (text below video)
 • Auto cleanup every 2 minutes
 • Pause/Resume bot
-• Preserves file formats
 
 🛠️ **Commands:**
 /start - This menu
@@ -235,13 +226,15 @@ Hello {user.first_name}! 👋
 /clean - Clean files (admin)
 
 💡 **Files auto deleted after 2 minutes**
+
+❌ **This bot only supports Instagram links!**
 """
         
         await update.message.reply_text(welcome, parse_mode='Markdown')
         logger.info(f"User {user.id} started bot")
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages"""
+        """Handle text messages - ONLY Instagram links accepted"""
         if self.is_paused and self.paused_until and datetime.now() < self.paused_until:
             remaining = self.paused_until - datetime.now()
             hours = remaining.seconds // 3600
@@ -257,53 +250,47 @@ Hello {user.first_name}! 👋
         logger.info(f"Message from {user.first_name}: {text[:50]}")
         
         if text.startswith(('http://', 'https://')):
-            platform = self.detect_platform(text)
-            
-            if platform == 'instagram':
+            # Check if it's an Instagram link
+            if self.is_instagram_url(text):
                 await update.message.reply_text("📥 Downloading Instagram video with caption...")
-                await self.process_url(update, text, platform)
+                await self.download_instagram_with_caption(update, text)
             else:
-                await update.message.reply_text("📥 Downloading...")
-                await self.process_url(update, text, platform)
-        
+                await update.message.reply_text(
+                    "❌ **This bot only supports Instagram links!**\n\n"
+                    "Please send an Instagram video link.\n"
+                    "Example: https://www.instagram.com/reel/...\n"
+                    "or https://www.instagram.com/p/..."
+                )
         else:
             await update.message.reply_text(
-                "Please send a valid URL starting with http:// or https://\n\n"
-                "🌟 **Instagram:** Downloads video with caption/description"
+                "❌ **This bot only supports Instagram links!**\n\n"
+                "Please send a valid Instagram URL starting with http:// or https://\n"
+                "Example: https://www.instagram.com/reel/...\n"
+                "or https://www.instagram.com/p/..."
             )
-    
-    async def process_url(self, update: Update, url, platform):
-        """Process URL or direct file"""
-        try:
-            await update.message.reply_text("📥 Processing...")
-            
-            # Special handling for Instagram to get caption
-            if platform == 'instagram':
-                await self.download_instagram_with_caption(update, url)
-                return
-            
-            # For direct files, use direct download
-            await self.download_direct_file(update, url)
-                    
-        except Exception as e:
-            logger.error(f"Process URL error: {e}")
-            # Fallback to direct download
-            await self.download_direct_file(update, url)
     
     async def download_instagram_with_caption(self, update: Update, url):
         """Download Instagram video with caption"""
         try:
+            # Send initial message
+            status_msg = await update.message.reply_text("🔍 Processing Instagram link...")
+            
             ydl_opts = {
                 'format': 'best',
                 'quiet': True,
                 'outtmpl': str(self.download_dir / '%(title)s.%(ext)s'),
                 'no_warnings': True,
+                'extract_flat': False,
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # First get info to extract caption
+                await status_msg.edit_text("📥 Extracting video info...")
                 info = ydl.extract_info(url, download=False)
                 caption = self.get_instagram_caption(info)
+                
+                # Update status
+                await status_msg.edit_text("📥 Downloading video...")
                 
                 # Download
                 ydl.download([url])
@@ -315,7 +302,7 @@ Hello {user.first_name}! 👋
                     
                     if file_size > max_size:
                         os.remove(filename)
-                        await update.message.reply_text(f"❌ File too large: {file_size:.1f}MB")
+                        await status_msg.edit_text(f"❌ File too large: {file_size:.1f}MB")
                         return
                     
                     # Prepare caption
@@ -323,6 +310,9 @@ Hello {user.first_name}! 👋
                     if caption:
                         final_caption += f"{caption}\n\n"
                     final_caption += f"Size: {file_size:.1f}MB"
+                    
+                    # Update status
+                    await status_msg.edit_text(f"📤 Uploading ({file_size:.1f}MB)...")
                     
                     # Send video
                     with open(filename, 'rb') as f:
@@ -332,107 +322,17 @@ Hello {user.first_name}! 👋
                             supports_streaming=True
                         )
                     
-                    await update.message.reply_text(f"✅ Instagram download complete!")
+                    await status_msg.edit_text(f"✅ Instagram download complete! ({file_size:.1f}MB)")
                     
                     # Schedule deletion
                     self.schedule_file_deletion(filename)
                 else:
-                    await update.message.reply_text("❌ File not found after download")
+                    await status_msg.edit_text("❌ File not found after download")
                     
         except Exception as e:
             logger.error(f"Instagram download error: {e}")
-            await update.message.reply_text(f"❌ Instagram error: {str(e)[:100]}")
-    
-    async def download_direct_file(self, update: Update, url):
-        """Download direct file preserving format"""
-        try:
-            # Get filename
-            filename = os.path.basename(url.split('?')[0])
-            if not filename:
-                filename = f"file_{int(time.time())}"
-            
-            filepath = self.download_dir / filename
-            
-            # Download
-            await update.message.reply_text("📥 Downloading...")
-            response = requests.get(url, stream=True, timeout=60)
-            response.raise_for_status()
-            
-            total_size = int(response.headers.get('content-length', 0))
-            
-            with open(filepath, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
-            file_size = os.path.getsize(filepath) / (1024 * 1024)
-            max_size = self.config['telegram']['max_file_size']
-            
-            if file_size > max_size:
-                os.remove(filepath)
-                await update.message.reply_text(f"❌ File too large: {file_size:.1f}MB")
-                return
-            
-            # Send with correct method
-            await self.send_file_with_caption(update, str(filepath), "", "direct")
-            
-            # Schedule deletion
-            self.schedule_file_deletion(str(filepath))
-            
-        except Exception as e:
-            logger.error(f"Direct download error: {e}")
-            await update.message.reply_text(f"❌ Download error: {str(e)[:100]}")
-    
-    async def send_file_with_caption(self, update: Update, filepath, caption, platform):
-        """Send file with appropriate method and caption"""
-        try:
-            file_size = os.path.getsize(filepath) / (1024 * 1024)
-            filename = os.path.basename(filepath)
-            
-            with open(filepath, 'rb') as f:
-                # Prepare base caption
-                base_caption = ""
-                if platform == 'instagram' and caption:
-                    base_caption = f"📷 Instagram Video\n\n{caption}\n\n"
-                elif caption:
-                    base_caption = f"{caption}\n\n"
-                
-                final_caption = f"{base_caption}Size: {file_size:.1f}MB"
-                
-                # Determine file type and send
-                if filepath.endswith(('.mp3', '.m4a', '.wav', '.ogg', '.opus')):
-                    await update.message.reply_audio(
-                        audio=f,
-                        caption=final_caption[:1024],
-                        title=filename[:50]
-                    )
-                elif filepath.endswith(('.mp4', '.avi', '.mkv', '.mov', '.webm')):
-                    await update.message.reply_video(
-                        video=f,
-                        caption=final_caption[:1024],
-                        supports_streaming=True
-                    )
-                elif filepath.endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
-                    await update.message.reply_photo(
-                        photo=f,
-                        caption=final_caption[:1024]
-                    )
-                else:
-                    await update.message.reply_document(
-                        document=f,
-                        caption=final_caption[:1024]
-                    )
-            
-            await update.message.reply_text(f"✅ Download complete! ({file_size:.1f}MB)")
-            
-        except Exception as e:
-            logger.error(f"Send file error: {e}")
-            # Fallback to simple document
-            with open(filepath, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    caption=f"📄 {filename}\nSize: {file_size:.1f}MB"
-                )
+            error_msg = f"❌ Error downloading Instagram video:\n{str(e)[:200]}"
+            await update.message.reply_text(error_msg)
     
     def schedule_file_deletion(self, filepath):
         """Schedule file deletion after 2 minutes"""
@@ -451,8 +351,8 @@ Hello {user.first_name}! 👋
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📖 **Help**\n\n"
-            "Send Instagram link → Downloads video with caption\n"
-            "Send other links → Auto download\n"
+            "Send Instagram link → Downloads video with caption\n\n"
+            "❌ **This bot only supports Instagram links!**\n"
             "Files auto deleted after 2 minutes",
             parse_mode='Markdown'
         )
@@ -471,7 +371,8 @@ Hello {user.first_name}! 👋
             f"✅ Bot active\n"
             f"📁 Files: {len(files)}\n"
             f"💾 Size: {total_size:.1f}MB\n"
-            f"👤 Your ID: {user.id}",
+            f"👤 Your ID: {user.id}\n\n"
+            f"❌ **This bot only supports Instagram links!**",
             parse_mode='Markdown'
         )
     
@@ -526,8 +427,9 @@ Hello {user.first_name}! 👋
     def run(self):
         """Run the bot"""
         print("=" * 50)
-        print("🤖 Instagram Download Bot")
+        print("🤖 Instagram Only Download Bot")
         print("🎯 Caption download enabled")
+        print("❌ Only Instagram links accepted")
         print("=" * 50)
         
         if not self.token or self.token == 'YOUR_BOT_TOKEN_HERE':
@@ -547,7 +449,7 @@ Hello {user.first_name}! 👋
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
         print("✅ Bot ready!")
-        print("📱 Send Instagram link to test caption download")
+        print("📱 Only Instagram links will be accepted")
         print("=" * 50)
         
         app.run_polling()
@@ -585,13 +487,13 @@ CONFIGEOF
 print_blue "7. Creating management script..."
 cat > manage.sh << 'MANAGEEOF'
 #!/bin/bash
-# manage.sh - Instagram bot management
+# manage.sh - Instagram only bot management
 
 cd "$(dirname "$0")"
 
 case "$1" in
     start)
-        echo "🚀 Starting Instagram Bot..."
+        echo "🚀 Starting Instagram Only Bot..."
         source venv/bin/activate
         > bot.log
         nohup python bot.py >> bot.log 2>&1 &
@@ -601,7 +503,7 @@ case "$1" in
         echo ""
         echo "🎯 Features:"
         echo "   • Instagram video download with caption"
-        echo "   • Preserves original file formats"
+        echo "   • Only accepts Instagram links"
         echo "   • Auto cleanup every 2 minutes"
         ;;
     stop)
@@ -710,8 +612,8 @@ except Exception as e:
         echo "✅ Auto-start configured"
         ;;
     *)
-        echo "🤖 Instagram Download Bot Management"
-        echo "==================================="
+        echo "🤖 Instagram Only Download Bot Management"
+        echo "========================================="
         echo ""
         echo "📁 Directory: $INSTALL_DIR"
         echo ""
@@ -730,9 +632,11 @@ except Exception as e:
         echo ""
         echo "🎯 Features:"
         echo "  • Instagram video download with caption"
-        echo "  • Preserves original formats"
+        echo "  • Only accepts Instagram links"
         echo "  • Auto cleanup (2 minutes)"
         echo "  • Pause/Resume functionality"
+        echo ""
+        echo "❌ **This bot only supports Instagram links!**"
         ;;
 esac
 MANAGEEOF
@@ -747,7 +651,7 @@ yt-dlp==2025.11.12
 requests==2.32.5
 REQEOF
 
-print_green "✅ INSTAGRAM BOT WITH CAPTION SUPPORT INSTALLED!"
+print_green "✅ INSTAGRAM ONLY BOT INSTALLED!"
 echo ""
 echo "📋 SETUP STEPS:"
 echo "================"
@@ -769,14 +673,13 @@ echo "   • Find your bot"
 echo "   • Send /start"
 echo "   • Send Instagram link → Downloads video with caption"
 echo ""
-echo "🌟 FEATURE: Instagram caption download"
-echo "   When you send an Instagram video link,"
-echo "   the bot will download the video and include"
-echo "   the caption/description in the Telegram message!"
+echo "❌ **IMPORTANT:**"
+echo "   This bot ONLY accepts Instagram links!"
+echo "   Other links will be rejected with an error message."
 echo ""
 echo "🔧 Troubleshooting:"
 echo "   ./manage.sh logs     # Check errors"
 echo "   ./manage.sh debug    # Run in foreground"
 echo ""
 echo "🚀 Install command for others:"
-echo "bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/instagram_bot_install.sh)"
+echo "bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/instagram_only_bot_install.sh)"
