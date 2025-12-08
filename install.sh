@@ -1,11 +1,11 @@
 #!/bin/bash
-# quality_install.sh - Install Telegram bot with quality selection
-# Run: bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/quality_install.sh)
+# instagram_bot_install.sh - Install Telegram bot for Instagram with caption support
+# Run: bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/instagram_bot_install.sh)
 
 set -e
 
-echo "🎯 Installing Telegram Bot with Quality Selection"
-echo "================================================"
+echo "🎯 Installing Instagram Telegram Bot with Caption Support"
+echo "========================================================"
 
 # Colors
 GREEN='\033[0;32m'
@@ -18,7 +18,7 @@ print_red() { echo -e "${RED}[✗]${NC} $1"; }
 print_blue() { echo -e "${BLUE}[i]${NC} $1"; }
 
 # Install directory
-INSTALL_DIR="/opt/quality-tg-bot"
+INSTALL_DIR="/opt/instagram-tg-bot"
 
 # Step 1: Cleanup
 print_blue "1. Cleaning old installations..."
@@ -42,14 +42,14 @@ print_blue "4. Installing Python packages..."
 pip install --upgrade pip
 pip install python-telegram-bot==20.7 yt-dlp==2025.11.12 requests==2.32.5
 
-# Step 5: Create bot.py with quality selection
-print_blue "5. Creating bot.py with quality selection..."
+# Step 5: Create bot.py with Instagram caption support
+print_blue "5. Creating bot.py with Instagram caption support..."
 cat > bot.py << 'BOTPYEOF'
 #!/usr/bin/env python3
 """
-Telegram Download Bot with Quality Selection
+Telegram Instagram Download Bot with Caption Support
 Features:
-1. Quality selection for YouTube/Twitter with file sizes
+1. Instagram video download with caption support
 2. Original format preservation for direct files
 3. Auto cleanup every 2 minutes
 4. Pause/Resume functionality
@@ -61,13 +61,13 @@ import logging
 import asyncio
 import threading
 import time
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import yt_dlp
 import requests
-import mimetypes
 
 # Setup logging
 logging.basicConfig(
@@ -80,7 +80,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class QualityDownloadBot:
+class InstagramDownloadBot:
     def __init__(self):
         self.config = self.load_config()
         self.token = self.config['telegram']['token']
@@ -97,7 +97,7 @@ class QualityDownloadBot:
         # Start auto cleanup
         self.start_auto_cleanup()
         
-        logger.info("🤖 Quality Download Bot initialized")
+        logger.info("🤖 Instagram Download Bot initialized")
         print(f"✅ Token: {self.token[:15]}...")
     
     def load_config(self):
@@ -160,120 +160,39 @@ class QualityDownloadBot:
         """Detect platform from URL"""
         url_lower = url.lower()
         
-        if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
-            return 'youtube'
-        elif 'instagram.com' in url_lower:
+        if 'instagram.com' in url_lower:
             return 'instagram'
-        elif 'twitter.com' in url_lower or 'x.com' in url_lower:
-            return 'twitter'
-        elif 'tiktok.com' in url_lower:
-            return 'tiktok'
-        elif 'facebook.com' in url_lower or 'fb.com' in url_lower:
-            return 'facebook'
         else:
             return 'generic'
     
-    async def get_video_formats(self, url):
-        """Get available formats with sizes"""
+    def get_instagram_caption(self, info):
+        """Extract caption from Instagram video info"""
         try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-            }
+            caption = ""
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                
-                formats = []
-                if 'formats' in info:
-                    for fmt in info['formats']:
-                        if not fmt.get('filesize'):
-                            continue
-                        
-                        # Skip audio-only for video selection
-                        if fmt.get('vcodec') == 'none' and fmt.get('acodec') != 'none':
-                            continue
-                        
-                        resolution = fmt.get('resolution', 'N/A')
-                        if resolution == 'audio only':
-                            continue
-                        
-                        format_note = fmt.get('format_note', '')
-                        if not format_note and resolution != 'N/A':
-                            format_note = resolution
-                        
-                        # Calculate size
-                        size_mb = fmt['filesize'] / (1024 * 1024)
-                        max_size = self.config['telegram']['max_file_size']
-                        
-                        if size_mb > max_size:
-                            continue
-                        
-                        formats.append({
-                            'format_id': fmt['format_id'],
-                            'resolution': resolution,
-                            'format_note': format_note,
-                            'ext': fmt.get('ext', 'mp4'),
-                            'filesize_mb': round(size_mb, 1),
-                            'quality': f"{format_note} ({resolution}) - {size_mb:.1f}MB"
-                        })
-                
-                # Sort by quality (highest first)
-                formats.sort(key=lambda x: (
-                    -int(x['resolution'].split('x')[0]) if 'x' in x['resolution'] else 0,
-                    -x['filesize_mb']
-                ))
-                
-                return formats[:5]  # Return top 5 formats
-                
+            # Try different fields for caption
+            if 'description' in info and info['description']:
+                caption = info['description']
+            elif 'title' in info and info['title']:
+                caption = info['title']
+            elif 'fulltitle' in info and info['fulltitle']:
+                caption = info['fulltitle']
+            
+            # Clean up the caption
+            if caption:
+                # Remove URLs
+                caption = re.sub(r'http\S+', '', caption)
+                # Remove extra whitespace
+                caption = ' '.join(caption.split())
+                # Truncate if too long
+                if len(caption) > 1000:
+                    caption = caption[:1000] + "..."
+            
+            return caption
+            
         except Exception as e:
-            logger.error(f"Error getting formats: {e}")
-            return []
-    
-    def create_quality_keyboard(self, formats, platform):
-        """Create keyboard for quality selection"""
-        keyboard = []
-        
-        if platform in ['youtube', 'twitter'] and formats:
-            for fmt in formats:
-                quality_label = fmt['quality']
-                if len(quality_label) > 50:
-                    quality_label = quality_label[:47] + "..."
-                
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"🎬 {quality_label}",
-                        callback_data=f"download_{fmt['format_id']}"
-                    )
-                ])
-            
-            # Add audio option for YouTube
-            if platform == 'youtube':
-                keyboard.append([
-                    InlineKeyboardButton(
-                        "🎵 MP3 Audio Only",
-                        callback_data="download_bestaudio"
-                    )
-                ])
-        else:
-            # Default options if no formats
-            keyboard.append([
-                InlineKeyboardButton("📹 Best Quality", callback_data="download_best")
-            ])
-            keyboard.append([
-                InlineKeyboardButton("📹 720p HD", callback_data="download_best[height<=720]")
-            ])
-            keyboard.append([
-                InlineKeyboardButton("📹 480p SD", callback_data="download_best[height<=480]")
-            ])
-        
-        # Add cancel button
-        keyboard.append([
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel")
-        ])
-        
-        return InlineKeyboardMarkup(keyboard)
+            logger.error(f"Error extracting Instagram caption: {e}")
+            return ""
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -291,24 +210,18 @@ class QualityDownloadBot:
         welcome = f"""
 Hello {user.first_name}! 👋
 
-🤖 **Telegram Download Bot with Quality Selection**
+🤖 **Instagram Download Bot with Caption Support**
 
 📥 **Supported Platforms:**
-✅ YouTube (choose quality with file size)
-✅ Twitter/X (choose quality with file size)
-✅ Instagram
-✅ TikTok  
-✅ Facebook
+✅ Instagram (downloads video with caption/description)
 ✅ Direct files (keeps original format)
 
 🎯 **How to use:**
-1. Send YouTube/Twitter link → Choose quality
-2. Send other links → Auto download
-3. Send direct file → Keeps original format
+1. Send Instagram link → Downloads video with caption
+2. Send direct file → Keeps original format
 
 ⚡ **Features:**
-• Quality selection for YouTube/Twitter
-• Shows file size for each quality
+• Instagram caption download (text below video)
 • Auto cleanup every 2 minutes
 • Pause/Resume bot
 • Preserves file formats
@@ -346,101 +259,54 @@ Hello {user.first_name}! 👋
         if text.startswith(('http://', 'https://')):
             platform = self.detect_platform(text)
             
-            if platform in ['youtube', 'twitter']:
-                # Show quality selection
-                await update.message.reply_text("🔍 Getting available qualities...")
-                formats = await self.get_video_formats(text)
-                
-                if formats:
-                    info_text = f"📹 **{platform.capitalize()} Video**\n\n"
-                    info_text += "🎬 **Available Qualities:**\n"
-                    
-                    for i, fmt in enumerate(formats[:3], 1):
-                        info_text += f"{i}. {fmt['quality']}\n"
-                    
-                    if len(formats) > 3:
-                        info_text += f"... and {len(formats) - 3} more\n"
-                    
-                    await update.message.reply_text(info_text, parse_mode='Markdown')
-                    
-                    keyboard = self.create_quality_keyboard(formats, platform)
-                    await update.message.reply_text(
-                        "👇 Select quality:",
-                        reply_markup=keyboard
-                    )
-                    
-                    # Save for callback
-                    context.user_data['last_url'] = text
-                    context.user_data['last_platform'] = platform
-                    
-                else:
-                    # Fallback if no formats
-                    await update.message.reply_text("📥 Downloading with best quality...")
-                    await self.download_video(update, text, 'best')
-            
+            if platform == 'instagram':
+                await update.message.reply_text("📥 Downloading Instagram video with caption...")
+                await self.process_url(update, text, platform)
             else:
-                # Other platforms or direct files
                 await update.message.reply_text("📥 Downloading...")
                 await self.process_url(update, text, platform)
         
         else:
             await update.message.reply_text(
                 "Please send a valid URL starting with http:// or https://\n\n"
-                "🌟 **Special:** YouTube/Twitter links show quality options!"
+                "🌟 **Instagram:** Downloads video with caption/description"
             )
     
-    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle callback queries"""
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        
-        if data == 'cancel':
-            await query.edit_message_text("❌ Download cancelled.")
-            return
-        
-        if data.startswith('download_'):
-            format_id = data.replace('download_', '')
-            
-            url = context.user_data.get('last_url')
-            if not url:
-                await query.edit_message_text("❌ URL not found!")
-                return
-            
-            await query.edit_message_text(f"⏳ Downloading...")
-            await self.download_video(update, url, format_id, query=query)
-    
-    async def download_video(self, update: Update, url, format_spec, query=None):
-        """Download video with specific format - FIXED VERSION"""
+    async def process_url(self, update: Update, url, platform):
+        """Process URL or direct file"""
         try:
-            # Determine if this is from callback or message
-            from_callback = query is not None
-            message = query.message if from_callback else update.message
+            await update.message.reply_text("📥 Processing...")
             
-            if not message:
-                error_msg = "❌ Message not found!"
-                if query:
-                    await query.edit_message_text(error_msg)
-                else:
-                    await update.message.reply_text(error_msg)
+            # Special handling for Instagram to get caption
+            if platform == 'instagram':
+                await self.download_instagram_with_caption(update, url)
                 return
             
-            # Update status message
-            status_msg = f"⏳ Downloading with {format_spec}..."
-            if from_callback:
-                await query.edit_message_text(status_msg)
-            else:
-                status_message = await update.message.reply_text(status_msg)
-            
+            # For direct files, use direct download
+            await self.download_direct_file(update, url)
+                    
+        except Exception as e:
+            logger.error(f"Process URL error: {e}")
+            # Fallback to direct download
+            await self.download_direct_file(update, url)
+    
+    async def download_instagram_with_caption(self, update: Update, url):
+        """Download Instagram video with caption"""
+        try:
             ydl_opts = {
-                'format': format_spec,
+                'format': 'best',
                 'quiet': True,
-                'outtmpl': str(self.download_dir / '%(title).100s.%(ext)s'),
+                'outtmpl': str(self.download_dir / '%(title)s.%(ext)s'),
+                'no_warnings': True,
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
+                # First get info to extract caption
+                info = ydl.extract_info(url, download=False)
+                caption = self.get_instagram_caption(info)
+                
+                # Download
+                ydl.download([url])
                 filename = ydl.prepare_filename(info)
                 
                 if os.path.exists(filename):
@@ -449,81 +315,33 @@ Hello {user.first_name}! 👋
                     
                     if file_size > max_size:
                         os.remove(filename)
-                        error_msg = f"❌ File too large: {file_size:.1f}MB"
-                        if from_callback:
-                            await query.edit_message_text(error_msg)
-                        else:
-                            await status_message.edit_text(error_msg)
+                        await update.message.reply_text(f"❌ File too large: {file_size:.1f}MB")
                         return
                     
-                    # Upload status
-                    upload_msg = f"📤 Uploading ({file_size:.1f}MB)..."
-                    if from_callback:
-                        await query.edit_message_text(upload_msg)
-                    else:
-                        await status_message.edit_text(upload_msg)
+                    # Prepare caption
+                    final_caption = "📷 Instagram Video\n\n"
+                    if caption:
+                        final_caption += f"{caption}\n\n"
+                    final_caption += f"Size: {file_size:.1f}MB"
                     
-                    # Send file - FIX: Use the correct message object
+                    # Send video
                     with open(filename, 'rb') as f:
-                        if filename.endswith(('.mp3', '.m4a')):
-                            await message.reply_audio(
-                                audio=f,
-                                caption=f"🎵 {info.get('title', 'Audio')[:50]}\nSize: {file_size:.1f}MB"
-                            )
-                        else:
-                            await message.reply_video(
-                                video=f,
-                                caption=f"📹 {info.get('title', 'Video')[:50]}\nSize: {file_size:.1f}MB",
-                                supports_streaming=True
-                            )
+                        await update.message.reply_video(
+                            video=f,
+                            caption=final_caption[:1024],
+                            supports_streaming=True
+                        )
                     
-                    success_msg = f"✅ Download complete! ({file_size:.1f}MB)"
-                    if from_callback:
-                        await query.edit_message_text(success_msg)
-                    else:
-                        await status_message.edit_text(success_msg)
+                    await update.message.reply_text(f"✅ Instagram download complete!")
                     
                     # Schedule deletion
                     self.schedule_file_deletion(filename)
-                    
                 else:
-                    error_msg = "❌ File not found"
-                    if from_callback:
-                        await query.edit_message_text(error_msg)
-                    else:
-                        await update.message.reply_text(error_msg)
-                        
+                    await update.message.reply_text("❌ File not found after download")
+                    
         except Exception as e:
-            logger.error(f"Download error: {e}")
-            error_msg = f"❌ Error: {str(e)[:100]}"
-            if query:
-                await query.edit_message_text(error_msg)
-            else:
-                await update.message.reply_text(error_msg)
-    
-    async def process_url(self, update: Update, url, platform):
-        """Process generic URL or direct file"""
-        try:
-            # Try yt-dlp first for media
-            ydl_opts = {
-                'format': 'best',
-                'quiet': True,
-                'outtmpl': str(self.download_dir / '%(title).100s.%(ext)s'),
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                
-                if os.path.exists(filename):
-                    await self.send_file(update, filename, info.get('title', 'File'))
-                else:
-                    # If yt-dlp fails, try direct download
-                    await self.download_direct_file(update, url)
-                    
-        except:
-            # Fallback to direct download
-            await self.download_direct_file(update, url)
+            logger.error(f"Instagram download error: {e}")
+            await update.message.reply_text(f"❌ Instagram error: {str(e)[:100]}")
     
     async def download_direct_file(self, update: Update, url):
         """Download direct file preserving format"""
@@ -536,6 +354,7 @@ Hello {user.first_name}! 👋
             filepath = self.download_dir / filename
             
             # Download
+            await update.message.reply_text("📥 Downloading...")
             response = requests.get(url, stream=True, timeout=60)
             response.raise_for_status()
             
@@ -555,7 +374,7 @@ Hello {user.first_name}! 👋
                 return
             
             # Send with correct method
-            await self.send_file(update, str(filepath), filename)
+            await self.send_file_with_caption(update, str(filepath), "", "direct")
             
             # Schedule deletion
             self.schedule_file_deletion(str(filepath))
@@ -564,33 +383,56 @@ Hello {user.first_name}! 👋
             logger.error(f"Direct download error: {e}")
             await update.message.reply_text(f"❌ Download error: {str(e)[:100]}")
     
-    async def send_file(self, update: Update, filepath, title):
-        """Send file with appropriate method"""
-        file_size = os.path.getsize(filepath) / (1024 * 1024)
-        
-        with open(filepath, 'rb') as f:
-            if filepath.endswith(('.mp3', '.m4a', '.wav', '.ogg')):
-                await update.message.reply_audio(
-                    audio=f,
-                    caption=f"🎵 {title[:50]}\nSize: {file_size:.1f}MB"
-                )
-            elif filepath.endswith(('.mp4', '.avi', '.mkv', '.mov')):
-                await update.message.reply_video(
-                    video=f,
-                    caption=f"📹 {title[:50]}\nSize: {file_size:.1f}MB"
-                )
-            elif filepath.endswith(('.jpg', '.jpeg', '.png', '.gif')):
-                await update.message.reply_photo(
-                    photo=f,
-                    caption=f"🖼️ {title[:50]}\nSize: {file_size:.1f}MB"
-                )
-            else:
+    async def send_file_with_caption(self, update: Update, filepath, caption, platform):
+        """Send file with appropriate method and caption"""
+        try:
+            file_size = os.path.getsize(filepath) / (1024 * 1024)
+            filename = os.path.basename(filepath)
+            
+            with open(filepath, 'rb') as f:
+                # Prepare base caption
+                base_caption = ""
+                if platform == 'instagram' and caption:
+                    base_caption = f"📷 Instagram Video\n\n{caption}\n\n"
+                elif caption:
+                    base_caption = f"{caption}\n\n"
+                
+                final_caption = f"{base_caption}Size: {file_size:.1f}MB"
+                
+                # Determine file type and send
+                if filepath.endswith(('.mp3', '.m4a', '.wav', '.ogg', '.opus')):
+                    await update.message.reply_audio(
+                        audio=f,
+                        caption=final_caption[:1024],
+                        title=filename[:50]
+                    )
+                elif filepath.endswith(('.mp4', '.avi', '.mkv', '.mov', '.webm')):
+                    await update.message.reply_video(
+                        video=f,
+                        caption=final_caption[:1024],
+                        supports_streaming=True
+                    )
+                elif filepath.endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+                    await update.message.reply_photo(
+                        photo=f,
+                        caption=final_caption[:1024]
+                    )
+                else:
+                    await update.message.reply_document(
+                        document=f,
+                        caption=final_caption[:1024]
+                    )
+            
+            await update.message.reply_text(f"✅ Download complete! ({file_size:.1f}MB)")
+            
+        except Exception as e:
+            logger.error(f"Send file error: {e}")
+            # Fallback to simple document
+            with open(filepath, 'rb') as f:
                 await update.message.reply_document(
                     document=f,
-                    caption=f"📄 {title[:50]}\nSize: {file_size:.1f}MB"
+                    caption=f"📄 {filename}\nSize: {file_size:.1f}MB"
                 )
-        
-        await update.message.reply_text(f"✅ Download complete! ({file_size:.1f}MB)")
     
     def schedule_file_deletion(self, filepath):
         """Schedule file deletion after 2 minutes"""
@@ -609,7 +451,7 @@ Hello {user.first_name}! 👋
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📖 **Help**\n\n"
-            "Send YouTube/Twitter link → Choose quality\n"
+            "Send Instagram link → Downloads video with caption\n"
             "Send other links → Auto download\n"
             "Files auto deleted after 2 minutes",
             parse_mode='Markdown'
@@ -684,7 +526,8 @@ Hello {user.first_name}! 👋
     def run(self):
         """Run the bot"""
         print("=" * 50)
-        print("🤖 Telegram Bot with Quality Selection")
+        print("🤖 Instagram Download Bot")
+        print("🎯 Caption download enabled")
         print("=" * 50)
         
         if not self.token or self.token == 'YOUR_BOT_TOKEN_HERE':
@@ -702,17 +545,16 @@ Hello {user.first_name}! 👋
         app.add_handler(CommandHandler("resume", self.resume_command))
         app.add_handler(CommandHandler("clean", self.clean_command))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-        app.add_handler(CallbackQueryHandler(self.handle_callback))
         
         print("✅ Bot ready!")
-        print("📱 Send YouTube link to test quality selection")
+        print("📱 Send Instagram link to test caption download")
         print("=" * 50)
         
         app.run_polling()
 
 def main():
     try:
-        bot = QualityDownloadBot()
+        bot = InstagramDownloadBot()
         bot.run()
     except KeyboardInterrupt:
         print("\n🛑 Bot stopped")
@@ -743,13 +585,13 @@ CONFIGEOF
 print_blue "7. Creating management script..."
 cat > manage.sh << 'MANAGEEOF'
 #!/bin/bash
-# manage.sh - Quality bot management
+# manage.sh - Instagram bot management
 
 cd "$(dirname "$0")"
 
 case "$1" in
     start)
-        echo "🚀 Starting Quality Bot..."
+        echo "🚀 Starting Instagram Bot..."
         source venv/bin/activate
         > bot.log
         nohup python bot.py >> bot.log 2>&1 &
@@ -758,8 +600,7 @@ case "$1" in
         echo "📝 Logs: tail -f bot.log"
         echo ""
         echo "🎯 Features:"
-        echo "   • Quality selection for YouTube/Twitter"
-        echo "   • Shows file sizes for each quality"
+        echo "   • Instagram video download with caption"
         echo "   • Preserves original file formats"
         echo "   • Auto cleanup every 2 minutes"
         ;;
@@ -869,8 +710,8 @@ except Exception as e:
         echo "✅ Auto-start configured"
         ;;
     *)
-        echo "🤖 Quality Download Bot Management"
-        echo "================================="
+        echo "🤖 Instagram Download Bot Management"
+        echo "==================================="
         echo ""
         echo "📁 Directory: $INSTALL_DIR"
         echo ""
@@ -888,8 +729,7 @@ except Exception as e:
         echo "  ./manage.sh autostart  # Auto-start on reboot"
         echo ""
         echo "🎯 Features:"
-        echo "  • Quality selection for YouTube/Twitter"
-        echo "  • Shows file sizes"
+        echo "  • Instagram video download with caption"
         echo "  • Preserves original formats"
         echo "  • Auto cleanup (2 minutes)"
         echo "  • Pause/Resume functionality"
@@ -907,7 +747,7 @@ yt-dlp==2025.11.12
 requests==2.32.5
 REQEOF
 
-print_green "✅ QUALITY BOT INSTALLATION COMPLETE!"
+print_green "✅ INSTAGRAM BOT WITH CAPTION SUPPORT INSTALLED!"
 echo ""
 echo "📋 SETUP STEPS:"
 echo "================"
@@ -927,12 +767,16 @@ echo ""
 echo "4. In Telegram:"
 echo "   • Find your bot"
 echo "   • Send /start"
-echo "   • Send YouTube link → Choose quality"
-echo "   • Send direct file → Keeps original format"
+echo "   • Send Instagram link → Downloads video with caption"
+echo ""
+echo "🌟 FEATURE: Instagram caption download"
+echo "   When you send an Instagram video link,"
+echo "   the bot will download the video and include"
+echo "   the caption/description in the Telegram message!"
 echo ""
 echo "🔧 Troubleshooting:"
 echo "   ./manage.sh logs     # Check errors"
 echo "   ./manage.sh debug    # Run in foreground"
 echo ""
 echo "🚀 Install command for others:"
-echo "bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/quality_install.sh)"
+echo "bash <(curl -s https://raw.githubusercontent.com/2amir563/khodam-down-upload-instagram-youtube-x-facebook/main/instagram_bot_install.sh)"
