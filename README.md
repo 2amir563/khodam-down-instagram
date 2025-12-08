@@ -18,7 +18,7 @@ chmod +x install.sh
 
 توکن را حتماً تنظیم کنید: bash
 ```
-cd /opt/quality-tg-bot
+cd /opt/instagram-tg-bot
 nano config.json
 ```
 توکن ربات خود را جایگزین YOUR_BOT_TOKEN_HERE کنید
